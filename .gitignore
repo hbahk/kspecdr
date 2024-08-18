@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 out
 resources
+out_generic
 
 # C extensions
 *.so
