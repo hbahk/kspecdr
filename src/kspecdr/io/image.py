@@ -32,7 +32,7 @@ class ImageFile:
     the Fortran TDFIO functions used in the original 2dfdr code.
     """
     
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, mode: str = 'READ'):
         """
         Initialize the image file handler.
         
@@ -40,21 +40,28 @@ class ImageFile:
         ----------
         filename : str
             Path to the FITS file
+        mode : str, optional
+            File access mode ('READ', 'UPDATE', 'WRITE'). Default is 'READ'.
         """
         self.filename = filename
+        self.mode = mode.upper()
         self.hdul = None
         self._nx = None
         self._ny = None
         
-    def open(self, mode: str = 'READ') -> None:
+    def open(self, mode: str = None) -> None:
         """
         Open the FITS file.
         
         Parameters
         ----------
         mode : str, optional
-            File access mode ('READ', 'UPDATE', 'WRITE'). Default is 'READ'.
+            File access mode ('READ', 'UPDATE', 'WRITE'). 
+            If None, uses the mode set during initialization.
         """
+        if mode is None:
+            mode = self.mode
+            
         if mode.upper() == 'READ':
             self.hdul = fits.open(self.filename, mode='readonly')
         elif mode.upper() == 'UPDATE':
@@ -133,6 +140,63 @@ class ImageFile:
             logger.warning(f"Expected shape ({nx}, {ny}), got {data.shape}")
             
         return data.astype(np.float32)
+    
+    def write_image_data(self, data: np.ndarray) -> None:
+        """
+        Write image data to the primary HDU.
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            Image data array with shape (nx, ny)
+            
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Transpose to match Fortran convention (spectral, spatial)
+        data = data.T
+        
+        # Write data to primary HDU
+        self.hdul[0].data = data
+        
+        nx, ny = data.shape
+        
+        # Update header with new dimensions
+        self.hdul[0].header['NAXIS1'] = nx
+        self.hdul[0].header['NAXIS2'] = ny
+        
+        # Write to file
+        self.hdul.writeto(self.filename, overwrite=True)
+        
+    def save_as(self, filename: str) -> None:
+        """
+        Save the image file to a new filename.
+        
+        Parameters
+        ----------
+        filename : str
+            Path to the new FITS file
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Write to new file
+        self.hdul.writeto(filename, overwrite=True)
+        
+    def save_primary_as(self, filename: str) -> None:
+        """
+        Save the primary HDU to a new filename.
+        
+        Parameters
+        ----------
+        filename : str
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Write to new file
+        self.hdul[self.hdul.index_of("PRIMARY")].writeto(filename, overwrite=True)
         
     def read_variance_data(self, nx: int, ny: int) -> np.ndarray:
         """
@@ -177,6 +241,40 @@ class ImageFile:
             
         return data.astype(np.float32)
         
+    def write_variance_data(self, data: np.ndarray) -> None:
+        """
+        Write variance data to the variance HDU.
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            Variance data array with shape (nx, ny)
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Transpose to match FITS convention
+        data = data.T
+        
+        # Find variance HDU
+        variance_hdu = None
+        for hdu in self.hdul:
+            if hdu.name == 'VARIANCE':
+                variance_hdu = hdu
+                break
+                
+        if variance_hdu is None:
+            raise ValueError("No variance HDU found")
+            
+        # Write data to variance HDU
+        variance_hdu.data = data
+        
+        nx, ny = data.shape
+        
+        # Update header with new dimensions
+        variance_hdu.header['NAXIS1'] = nx
+        variance_hdu.header['NAXIS2'] = ny
+        
     def read_header_keyword(self, keyword: str) -> Tuple[str, str]:
         """
         Read a header keyword value and comment.
@@ -205,6 +303,29 @@ class ImageFile:
             comment = ""
             
         return str(value), str(comment)
+    
+    def get_header_value(self, keyword: str, default: str = None) -> str:
+        """
+        Get a header keyword value.
+        
+        Parameters
+        ----------
+        keyword : str
+            Header keyword name
+        default : str, optional
+            Default value if keyword not found
+            
+        Returns
+        -------
+        str
+            Keyword value or default value
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        header = self.hdul[0].header
+        return header.get(keyword, default)
+        
         
     def read_fibre_types(self, max_nfibres: int) -> Tuple[np.ndarray, int]:
         """
@@ -284,8 +405,221 @@ class ImageFile:
         logger.warning(f"Unknown instrument: {instrument}, using generic code")
         return 0  # INST_GENERIC
 
+    def has_variance(self) -> bool:
+        """
+        Check if the file has a variance HDU.
+        
+        Returns
+        -------
+        bool
+            True if variance HDU exists, False otherwise
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Check for variance HDU
+        for hdu in self.hdul:
+            if hdu.name == 'VARIANCE':
+                return True
+        return False
+    
+    def has_fiber_table(self) -> bool:
+        """
+        Check if the file has a fiber table HDU.
+        
+        Returns
+        -------
+        bool
+            True if fiber table HDU exists, False otherwise
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Check for fiber table HDU
+        for hdu in self.hdul:
+            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+                return True
+        return False
+
+    def add_history(self, history: str) -> None:
+        """
+        Add a history record to the primary HDU.
+        
+        Parameters
+        ----------
+        history : str
+            History record to add
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Add history to primary HDU
+        self.hdul[0].header['HISTORY'] = history
+
+    def read_fiber_table(self) -> Optional[np.ndarray]:
+        """
+        Read fiber table data.
+        
+        Returns
+        -------
+        np.ndarray or None
+            Fiber table data if present, None otherwise
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Find fiber table HDU
+        fiber_hdu = None
+        for hdu in self.hdul:
+            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+                fiber_hdu = hdu
+                break
+                
+        if fiber_hdu is None:
+            return None
+            
+        # Return fiber table data
+        return fiber_hdu.data
+    
+    def write_fiber_table(self, fiber_data: np.ndarray, table_name: str = 'FIBRES') -> None:
+        """
+        Write fiber table data.
+        
+        Parameters
+        ----------
+        fiber_data : np.ndarray
+            Fiber table data
+        table_name : str, optional
+            Name of the fiber table HDU ('FIBRES' or 'FIBRES_IFU')
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Create fiber table HDU
+        fiber_hdu = fits.BinTableHDU(fiber_data, name=table_name)
+        fiber_hdu.header['EXTNAME'] = table_name
+        
+        # Add to HDU list
+        self.hdul.append(fiber_hdu)
+    
+    def copy_fiber_table_from(self, source_file: 'ImageFile') -> None:
+        """
+        Copy fiber table from another file.
+        
+        Parameters
+        ----------
+        source_file : ImageFile
+            Source file containing fiber table
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Read fiber table from source
+        fiber_data = source_file.read_fiber_table()
+        if fiber_data is None:
+            logger.warning("No fiber table found in source file")
+            return
+            
+        # Determine table name
+        table_name = 'FIBRES'
+        for hdu in source_file.hdul:
+            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+                table_name = hdu.name
+                break
+        
+        # Write fiber table to current file
+        self.write_fiber_table(fiber_data, table_name)
+        logger.info(f"Copied fiber table '{table_name}' from source file")
+    
+    def get_fiber_table_name(self) -> Optional[str]:
+        """
+        Get the name of the fiber table HDU.
+        
+        Returns
+        -------
+        str or None
+            Name of fiber table HDU if present, None otherwise
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        for hdu in self.hdul:
+            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+                return hdu.name
+        return None
+    
+    def remove_fibers_beyond(self, max_fibers: int) -> None:
+        """
+        Remove fibers beyond a certain number (for TAIPAN).
+        
+        Parameters
+        ----------
+        max_fibers : int
+            Maximum number of fibers to keep
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Find fiber table HDU
+        fiber_hdu = None
+        for hdu in self.hdul:
+            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+                fiber_hdu = hdu
+                break
+                
+        if fiber_hdu is None:
+            logger.warning("No fiber table found")
+            return
+            
+        # Get number of rows
+        nrows = len(fiber_hdu.data)
+        
+        if nrows > max_fibers:
+            logger.info(f"Removing fibers beyond {max_fibers} (current: {nrows})")
+            
+            # Create new fiber table with limited rows
+            new_fiber_data = fiber_hdu.data[:max_fibers]
+            
+            # Replace the fiber table
+            fiber_hdu.data = new_fiber_data
+            
+            logger.info(f"Fiber table reduced to {max_fibers} fibers")
+        else:
+            logger.info(f"Fiber table has {nrows} fibers (within limit of {max_fibers})")
+
+    def set_class(self, class_type: str) -> None:
+        """
+        Set the CLASS keyword in the primary HDU.
+        
+        Parameters
+        ----------
+        class_type : str
+            Class type to set
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Set CLASS keyword in primary HDU
+        self.hdul[0].header['CLASS'] = class_type
+
+    def delete_keyword(self, keyword: str) -> None:
+        """
+        Delete a keyword from the primary HDU.
+        
+        Parameters
+        ----------
+        keyword : str
+            Keyword to delete
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+            
+        # Delete keyword from primary HDU
+        if keyword in self.hdul[0].header:
+            del self.hdul[0].header[keyword]
+
     def __enter__(self):
-        self.open()
+        self.open()  # Uses self.mode from initialization
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):

@@ -1,126 +1,177 @@
 """
-Example usage of the make_im module.
+Example usage of the MakeIM class for preprocessing raw data to IM format.
 
-This script demonstrates how to use the MakeIM class and make_im function
-to process raw astronomical data into IM files.
+This example demonstrates:
+1. Basic raw to IM conversion
+2. Bias subtraction
+3. Dark subtraction  
+4. Flat fielding
+5. Bad pixel masking
+6. Cosmic ray removal
+7. Fiber table handling
 """
 
 import logging
-from pathlib import Path
-from .make_im import MakeIM, make_im
+from kspecdr.preproc.make_im import MakeIM, make_im
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def example_basic_usage():
-    """Example of basic usage with minimal parameters."""
-    print("=== Basic Usage Example ===")
+def example_basic_conversion():
+    """Basic raw to IM conversion."""
+    logger.info("=== Basic Raw to IM Conversion ===")
     
-    # Example raw file path (you would replace this with your actual file)
-    raw_filename = "example_raw.fits"
-    
-    # Basic processing - just create IM file with variance
-    if Path(raw_filename).exists():
-        im_filename = make_im(
-            raw_filename=raw_filename,
-            verbose=True
-        )
-        print(f"Created IM file: {im_filename}")
-    else:
-        print(f"Raw file {raw_filename} not found - this is just an example")
-
-def example_full_processing():
-    """Example of full processing with all options."""
-    print("\n=== Full Processing Example ===")
-    
-    # Example file paths
-    raw_filename = "example_raw.fits"
-    dark_filename = "master_dark.fits"
-    flat_filename = "master_flat.fits"
-    bad_pixel_mask = "bad_pixels.fits"
-    
-    # Check if files exist before processing
-    files_to_check = [raw_filename, dark_filename, flat_filename, bad_pixel_mask]
-    existing_files = [f for f in files_to_check if Path(f).exists()]
-    
-    if len(existing_files) > 0:
-        print(f"Found existing files: {existing_files}")
-        
-        # Full processing with all options
-        im_filename = make_im(
-            raw_filename=raw_filename,
-            use_bias=True,
-            use_dark=True,
-            dark_filename=dark_filename if Path(dark_filename).exists() else None,
-            use_flat=True,
-            flat_filename=flat_filename if Path(flat_filename).exists() else None,
-            bad_pixel_mask=bad_pixel_mask if Path(bad_pixel_mask).exists() else None,
-            mark_saturated=True,
-            cosmic_ray_method='LACOSMIC',
-            verbose=True
-        )
-        print(f"Created IM file: {im_filename}")
-    else:
-        print("No example files found - this is just a demonstration")
-
-def example_class_usage():
-    """Example using the MakeIM class directly."""
-    print("\n=== Class Usage Example ===")
-    
-    # Create processor instance
+    # Create processor
     processor = MakeIM(verbose=True)
     
-    # Example processing with custom parameters
-    raw_filename = "example_raw.fits"
+    # Process raw file to IM
+    im_file = processor.process_raw_to_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_im.fits"
+    )
     
-    if Path(raw_filename).exists():
-        im_filename = processor.process_raw_to_im(
-            raw_filename=raw_filename,
-            use_bias=True,
-            mark_saturated=True,
-            cosmic_ray_method='NONE'  # Skip cosmic ray removal for this example
-        )
-        print(f"Created IM file using class: {im_filename}")
-    else:
-        print(f"Raw file {raw_filename} not found - this is just an example")
+    logger.info(f"Created IM file: {im_file}")
 
-def example_parameter_documentation():
-    """Print documentation for the main parameters."""
-    print("\n=== Parameter Documentation ===")
+def example_with_bias_subtraction():
+    """Raw to IM conversion with bias subtraction."""
+    logger.info("=== Raw to IM with Bias Subtraction ===")
     
-    doc = """
-    make_im() Parameters:
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_bias_im.fits",
+        use_bias=True,
+        bias_filename="data/bias_taipan.fits"
+    )
     
-    raw_filename (str): Path to the raw input file
-    im_filename (str, optional): Path for output IM file (default: derived from raw_filename)
-    use_bias (bool): Whether to subtract bias frame (default: False)
-    use_dark (bool): Whether to subtract dark frame (default: False)
-    dark_filename (str): Path to dark frame file
-    use_flat (bool): Whether to divide by long-slit flat field (default: False)
-    flat_filename (str): Path to flat field file
-    bad_pixel_mask (str): Path to bad pixel mask file
-    bad_pixel_mask2 (str): Path to second bad pixel mask file (e.g., cosmic ray mask)
-    mark_saturated (bool): Whether to mark saturated pixels as bad (default: True)
-    cosmic_ray_method (str): Method for cosmic ray removal:
-        - 'NONE': No cosmic ray removal
-        - 'LACOSMIC': Use LACosmic algorithm
-        - 'BCLEAN': Use BCLEAN algorithm
-        - 'PYCOSMIC': Use Python cosmic ray removal
-    verbose (bool): Whether to print verbose output (default: True)
-    """
+    logger.info(f"Created bias-subtracted IM file: {im_file}")
+
+def example_with_dark_subtraction():
+    """Raw to IM conversion with dark subtraction."""
+    logger.info("=== Raw to IM with Dark Subtraction ===")
     
-    print(doc)
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_dark_im.fits",
+        use_dark=True,
+        dark_filename="data/dark_taipan.fits"
+    )
+    
+    logger.info(f"Created dark-subtracted IM file: {im_file}")
+
+def example_with_flat_fielding():
+    """Raw to IM conversion with flat fielding."""
+    logger.info("=== Raw to IM with Flat Fielding ===")
+    
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_flat_im.fits",
+        use_flat=True,
+        flat_filename="data/flat_taipan.fits"
+    )
+    
+    logger.info(f"Created flat-fielded IM file: {im_file}")
+
+def example_with_bad_pixel_masking():
+    """Raw to IM conversion with bad pixel masking."""
+    logger.info("=== Raw to IM with Bad Pixel Masking ===")
+    
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_mask_im.fits",
+        bad_pixel_mask="data/bad_pixels.fits",
+        bad_pixel_mask2="data/bad_pixels2.fits",
+        mark_saturated=True
+    )
+    
+    logger.info(f"Created bad-pixel-masked IM file: {im_file}")
+
+def example_with_cosmic_ray_removal():
+    """Raw to IM conversion with cosmic ray removal."""
+    logger.info("=== Raw to IM with Cosmic Ray Removal ===")
+    
+    # Using L.A.Cosmic method
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_cosmic_im.fits",
+        cosmic_ray_method="LACOSMIC",
+        sigclip=4.5,
+        sigfrac=0.3,
+        objlim=5.0,
+        gain=1.0,
+        readnoise=6.5,
+        satlevel=65535.0,
+        pssl=0.0,
+        niter=4,
+        sepmed=True,
+        cleantype="meanmask",
+        fsmode="median",
+        psfmodel="gauss",
+        psffwhm=2.5,
+        psfsize=7,
+        psfk=None,
+        psfbeta=4.765,
+        verbose=False
+    )
+    
+    logger.info(f"Created cosmic-ray-cleaned IM file: {im_file}")
+
+def example_complete_reduction():
+    """Complete reduction pipeline."""
+    logger.info("=== Complete Reduction Pipeline ===")
+    
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_complete_im.fits",
+        use_bias=True,
+        bias_filename="data/bias_taipan.fits",
+        use_dark=True,
+        dark_filename="data/dark_taipan.fits",
+        use_flat=True,
+        flat_filename="data/flat_taipan.fits",
+        bad_pixel_mask="data/bad_pixels.fits",
+        mark_saturated=True,
+        cosmic_ray_method="LACOSMIC"
+    )
+    
+    logger.info(f"Created complete reduction IM file: {im_file}")
+
+def example_fiber_table_handling():
+    """Example showing fiber table handling."""
+    logger.info("=== Fiber Table Handling ===")
+    
+    from kspecdr.io.image import ImageFile
+    
+    # Process raw file (fiber table will be copied automatically)
+    im_file = make_im(
+        raw_filename="data/raw_taipan.fits",
+        im_filename="data/taipan_fiber_im.fits"
+    )
+    
+    # Check fiber table in output file
+    with ImageFile(im_file, mode='READ') as im:
+        if im.has_fiber_table():
+            fiber_data = im.read_fiber_table()
+            table_name = im.get_fiber_table_name()
+            logger.info(f"Fiber table '{table_name}' copied with {len(fiber_data)} fibers")
+            
+            # For TAIPAN, fibers beyond 150 are removed
+            if "TAIPAN" in im.get_instrument().upper():
+                logger.info("TAIPAN fiber table processed (limited to 150 fibers)")
+        else:
+            logger.info("No fiber table found in output file")
+    
+    logger.info(f"Created IM file with fiber table: {im_file}")
 
 if __name__ == "__main__":
     # Run examples
-    example_basic_usage()
-    example_full_processing()
-    example_class_usage()
-    example_parameter_documentation()
+    example_basic_conversion()
+    example_with_bias_subtraction()
+    example_with_dark_subtraction()
+    example_with_flat_fielding()
+    example_with_bad_pixel_masking()
+    example_with_cosmic_ray_removal()
+    example_complete_reduction()
+    example_fiber_table_handling()
     
-    print("\n=== Usage Notes ===")
-    print("1. The make_im function creates IM files with '_im.fits' suffix")
-    print("2. Variance HDU is automatically created and initialized")
-    print("3. All processing steps are optional and can be controlled via parameters")
-    print("4. The module is based on the Fortran MAKE_IM routine from 2dfdr")
-    print("5. Error handling and logging are built into the module") 
+    logger.info("All examples completed!")

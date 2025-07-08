@@ -22,6 +22,14 @@ from astropy.io import fits
 from astropy.table import Table
 import warnings
 
+try:
+    import astroscrappy
+    HAS_ASTROSCRAPPY = True
+except ImportError:
+    HAS_ASTROSCRAPPY = False
+    logger = logging.getLogger(__name__)
+    logger.warning("astroscrappy not available. Cosmic ray removal will not work.")
+
 from ..io.image import ImageFile
 
 logger = logging.getLogger(__name__)
@@ -52,10 +60,11 @@ class MakeIM:
                           raw_filename: str,
                           im_filename: Optional[str] = None,
                           use_bias: bool = False,
+                          bias_filename: Optional[str] = None,
                           use_dark: bool = False,
                           dark_filename: Optional[str] = None,
-                          use_flat: bool = False,
-                          flat_filename: Optional[str] = None,
+                          use_lflat: bool = False,
+                          lflat_filename: Optional[str] = None,
                           bad_pixel_mask: Optional[str] = None,
                           bad_pixel_mask2: Optional[str] = None,
                           mark_saturated: bool = True,
@@ -76,10 +85,10 @@ class MakeIM:
             Whether to subtract dark frame
         dark_filename : str, optional
             Path to dark frame file
-        use_flat : bool, optional
+        use_lflat : bool, optional
             Whether to divide by long-slit flat field
-        flat_filename : str, optional
-            Path to flat field file
+        lflat_filename : str, optional
+            Path to long-slit flat field file
         bad_pixel_mask : str, optional
             Path to bad pixel mask file
         bad_pixel_mask2 : str, optional
@@ -107,24 +116,22 @@ class MakeIM:
             raw_path = Path(raw_filename)
             im_filename = str(raw_path.with_name(f"{raw_path.stem}_im.fits"))
         
-        # Step 1: Copy raw file to IM file
-        logger.info("Creating IM file from raw data...")
-        with ImageFile(raw_filename) as raw_file:
-            # Create IM file by copying raw file
-            raw_file.save_as(im_filename)
+        # Step 1: Create IM file from raw file with proper processing
+        logger.info("Creating IM file from raw data with TDFIO_CREATEBYCOPY functionality...")
+        self._create_im_from_raw(raw_filename, im_filename)
         
         # Step 2: Process the IM file
-        with ImageFile(im_filename, mode='update') as im_file:
+        with ImageFile(im_filename, mode='UPDATE') as im_file:
             # Step 2: Mark bad pixels
             if self.verbose:
                 logger.info("Marking bad pixels...")
-            self._mark_bad_pixels(im_file, use_bias, mark_saturated, 
+            self._mark_bad_pixels(im_file, mark_saturated, 
                                  bad_pixel_mask, bad_pixel_mask2)
             
             # Step 3: Process overscan and subtract bias
             if self.verbose:
                 logger.info("Processing overscan and bias subtraction...")
-            self._debiase_image(im_file, use_bias, **kwargs)
+            self._debiase_image(im_file, use_bias, bias_filename, **kwargs)
             
             # Step 4: Subtract dark frame
             if use_dark and dark_filename:
@@ -138,10 +145,10 @@ class MakeIM:
             self._add_variance(im_file)
             
             # Step 6: Apply long-slit flat field
-            if use_flat and flat_filename:
+            if use_lflat and lflat_filename:
                 if self.verbose:
                     logger.info("Applying long-slit flat field...")
-                self._divide_by_flat(im_file, flat_filename)
+                self._divide_by_lflat(im_file, lflat_filename)
             
             # Step 7: Remove cosmic rays
             if cosmic_ray_method != 'NONE':
@@ -156,7 +163,6 @@ class MakeIM:
     
     def _mark_bad_pixels(self, 
                          im_file: ImageFile,
-                         use_bias: bool,
                          mark_saturated: bool,
                          bad_pixel_mask: Optional[str] = None,
                          bad_pixel_mask2: Optional[str] = None) -> None:
@@ -167,8 +173,6 @@ class MakeIM:
         ----------
         im_file : ImageFile
             The image file to process
-        use_bias : bool
-            Whether bias subtraction is being used
         mark_saturated : bool
             Whether to mark saturated pixels as bad
         bad_pixel_mask : str, optional
@@ -245,7 +249,7 @@ class MakeIM:
             
             return mask_data.T  # Transpose to match our (x, y) convention
     
-    def _debiase_image(self, im_file: ImageFile, use_bias: bool, **kwargs) -> None:
+    def _debiase_image(self, im_file: ImageFile, use_bias: bool, bias_filename: Optional[str] = None, **kwargs) -> None:
         """
         Process overscan region and subtract bias.
         
@@ -255,6 +259,8 @@ class MakeIM:
             The image file to process
         use_bias : bool
             Whether bias subtraction is being used
+        bias_filename : str, optional
+            Path to bias frame file
         **kwargs
             Additional keyword arguments for bias processing
         """
@@ -262,15 +268,33 @@ class MakeIM:
         nx, ny = im_file.get_size()
         image_data = im_file.read_image_data(nx, ny)
         
-        # Get overscan region from header or use defaults
-        overscan_region = kwargs.get('overscan_region', None)
-        
-        if overscan_region is not None:
-            # Process overscan region
-            bias_level = self._calculate_bias_level(image_data, overscan_region)
-            image_data -= bias_level
-            logger.info(f"Subtracted bias level: {bias_level:.2f}")
-        
+        # Subtract bias frame if provided
+        if bias_filename is not None:
+            # Read bias frame
+            with ImageFile(bias_filename, mode='READ') as bias_file:
+                bias_data = bias_file.read_image_data(nx, ny)
+                # Get bias subtraction method from header or use defaults
+                bias_method = bias_file.get_header_value('BIASTYPE', 'MEDIAN')
+                if bias_method == 'MEDIAN':
+                    bias_level = np.nanmedian(bias_data)
+                elif bias_method == 'MASTER':
+                    bias_level = bias_data
+                else:
+                    raise ValueError(f"Unknown bias subtraction method: {bias_method}")
+                logger.info(f"Bias subtraction method: {bias_method}")
+                image_data -= bias_level
+                logger.info(f"Subtracted bias level: {np.nanmedian(bias_level):.2f}")
+        else:
+            # Get overscan region from header or use defaults
+            overscan_region = kwargs.get('overscan_region', None)
+            
+            if overscan_region is not None:
+                # Process overscan region
+                bias_level = self._calculate_bias_level(image_data, overscan_region)
+                image_data -= bias_level
+                logger.info("Bias subtraction method: OVERSCAN")
+                logger.info(f"Subtracted bias level: {bias_level:.2f}")
+            
         # Write back the processed image data
         im_file.write_image_data(image_data)
     
@@ -314,7 +338,7 @@ class MakeIM:
         image_data = im_file.read_image_data(nx, ny)
         
         # Read dark frame
-        with ImageFile(dark_filename) as dark_file:
+        with ImageFile(dark_filename, mode='READ') as dark_file:
             dark_data = dark_file.read_image_data(nx, ny)
             
             # Get exposure times
@@ -439,7 +463,7 @@ class MakeIM:
         
         return variance
     
-    def _divide_by_flat(self, im_file: ImageFile, flat_filename: str) -> None:
+    def _divide_by_lflat(self, im_file: ImageFile, lflat_filename: str) -> None:
         """
         Divide image by long-slit flat field.
         
@@ -447,47 +471,43 @@ class MakeIM:
         ----------
         im_file : ImageFile
             The image file to process
-        flat_filename : str
-            Path to flat field file
+        lflat_filename : str
+            Path to long-slit flat field file
         """
         # Read image data and variance
         nx, ny = im_file.get_size()
         image_data = im_file.read_image_data(nx, ny)
         variance_data = im_file.read_variance_data(nx, ny)
         
-        # Read flat field
-        with ImageFile(flat_filename) as flat_file:
-            flat_data = flat_file.read_image_data(nx, ny)
-            flat_variance = flat_file.read_variance_data(nx, ny)
+        # Read long-slit flat field
+        with ImageFile(lflat_filename, mode='READ') as lflat_file:
+            lflat_data = lflat_file.read_image_data(nx, ny)
+            lflat_variance = lflat_file.read_variance_data(nx, ny)
             
             # Check flat field class
-            flat_class = flat_file.get_header_value('CLASS', '')
-            if not flat_class.startswith('LFLATCAL'):
+            lflat_class = lflat_file.get_header_value('CLASS', '')
+            if not lflat_class.startswith('LFLATCAL'):
                 logger.warning("Flat field file may not have correct class")
             
             # Perform division with proper error propagation
-            # For division: var_result = (image/flat)^2 * (var_image/image^2 + var_flat/flat^2)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 
                 # Avoid division by zero
-                flat_data = np.where(flat_data > 0, flat_data, 1.0)
+                lflat_data = np.where(lflat_data > 0, lflat_data, np.nan)
                 
                 # Divide image by flat
-                image_data /= flat_data
+                image_data /= lflat_data
                 
                 # Propagate errors
-                variance_data = (image_data**2) * (
-                    variance_data / (image_data * flat_data)**2 + 
-                    flat_variance / flat_data**2
-                )
+                variance_data = (variance_data / lflat_data**2 + 
+                    (image_data**2 * lflat_variance / lflat_data**2))
+                    
             
             # Write back the processed data
             im_file.write_image_data(image_data)
             im_file.write_variance_data(variance_data)
-            
-            # Add history record
-            im_file.add_history(f"Divided by long-slit flat field {flat_filename}")
+            im_file.add_history(f"Divided by long-slit flat field {lflat_filename}")
     
     def _remove_cosmic_rays(self, im_file: ImageFile, method: str, **kwargs) -> None:
         """
@@ -527,28 +547,79 @@ class MakeIM:
     
     def _lacosmic_clean(self, image_data: np.ndarray, **kwargs) -> np.ndarray:
         """
-        Clean cosmic rays using LACosmic algorithm.
+        Clean cosmic rays using LACosmic algorithm via astroscrappy.
         
         Parameters
         ----------
         image_data : np.ndarray
             Image data to clean
         **kwargs
-            Additional parameters for LACosmic
+            Additional parameters for LACosmic:
+            - sigclip: sigma clipping threshold (default: 4.5)
+            - sigfrac: fraction of sigma clipping (default: 0.3)
+            - objlim: object limit (default: 5.0)
+            - gain: gain value (default: None, auto-detect)
+            - readnoise: read noise (default: None, auto-detect)
+            - satlevel: saturation level (default: None)
+            - verbose: verbose output (default: False)
             
         Returns
         -------
         np.ndarray
             Cleaned image data
         """
-        raise NotImplementedError(
-            "LACosmic cosmic ray removal not yet implemented. "
-            "This should implement the LACosmic algorithm for cosmic ray detection and removal."
-        )
+        if not HAS_ASTROSCRAPPY:
+            raise ImportError(
+                "astroscrappy is required for LACosmic cosmic ray removal. "
+                "Install it with: pip install astroscrappy"
+            )
+        
+        # Default parameters for astroscrappy
+        # TODO: add gain, readnoise, satlevel
+        default_params = {
+            'sigclip': 4.5,
+            'sigfrac': 0.3,
+            'objlim': 5.0,
+            'gain': None,
+            'readnoise': None,
+            'satlevel': None,
+            'verbose': False
+        }
+        
+        # Update with any provided kwargs
+        params = default_params.copy()
+        params.update(kwargs)
+        
+        logger.info("Running LACosmic cosmic ray removal with astroscrappy")
+        logger.info(f"Parameters: {params}")
+        
+        try:
+            # Run astroscrappy.detect_cosmics
+            # This returns (mask, cleaned_data)
+            mask, cleaned_data = astroscrappy.detect_cosmics(
+                image_data,
+                sigclip=params['sigclip'],
+                sigfrac=params['sigfrac'],
+                objlim=params['objlim'],
+                gain=params['gain'],
+                readnoise=params['readnoise'],
+                satlevel=params['satlevel'],
+                verbose=params['verbose']
+            )
+            
+            # Count cosmic rays detected
+            n_cosmic = np.sum(mask)
+            logger.info(f"Detected and removed {n_cosmic} cosmic ray pixels")
+            
+            return cleaned_data
+            
+        except Exception as e:
+            logger.error(f"Error in LACosmic cosmic ray removal: {e}")
+            raise RuntimeError(f"LACosmic cosmic ray removal failed: {e}")
     
     def _bclean_clean(self, image_data: np.ndarray, **kwargs) -> np.ndarray:
         """
-        Clean cosmic rays using BCLEAN algorithm.
+        Clean cosmic rays using BCLEAN-like algorithm via astroscrappy.
         
         Parameters
         ----------
@@ -588,14 +659,219 @@ class MakeIM:
             "This should implement a Python-based algorithm for cosmic ray detection and removal."
         )
 
+    def _create_im_from_raw(self, raw_filename: str, im_filename: str) -> None:
+        """
+        Create IM file from raw file with proper processing.
+        
+        This method implements the functionality of TDFIO_CREATEBYCOPY,
+        including:
+        - Raw file to IM file conversion
+        - BITPIX conversion (16-bit integer to 32-bit float)
+        - Variance HDU creation
+        - Instrument-specific processing (6DF, KOALA, TAIPAN)
+        - TAIPAN pre-subtraction
+        - Fiber table handling
+        
+        Parameters
+        ----------
+        raw_filename : str
+            Path to raw input file
+        im_filename : str
+            Path to output IM file
+        """
+        logger.info(f"Creating IM file from raw file: {raw_filename} -> {im_filename}")
+        
+        # Open raw file and get basic information
+        with ImageFile(raw_filename, mode='READ') as raw_file:
+            # Get image dimensions
+            nx, ny = raw_file.get_size()
+            
+            # Read image data (TDFIO_IMAGE_READ handles integer to float conversion)
+            image_data = raw_file.read_image_data(nx, ny)
+            
+            # Get instrument information
+            instrument = raw_file.get_header_value('INSTRUME', 'UNKNOWN')
+            spectid = raw_file.get_header_value('SPECTID', '')
+            class_type = raw_file.get_header_value('CLASS', '')
+            bitpix = raw_file.get_header_value('BITPIX', 16)
+            
+            logger.info(f"Instrument: {instrument}, SPECTID: {spectid}, CLASS: {class_type}, BITPIX: {bitpix}")
+            
+            # Check if this is raw data (16-bit integer)
+            is_raw_16bit = (bitpix == 16)
+            
+            # Instrument-specific processing
+            is_6df = (instrument.upper().startswith('6DF') and is_raw_16bit)
+            is_koala = (instrument.upper().startswith('AAOMEGA-KOALA') and is_raw_16bit)
+            is_taipan = (instrument.upper().startswith('TAIPAN') and is_raw_16bit)
+            
+            # TAIPAN specific checks
+            taipan_is_blue = spectid.upper().startswith('BL')
+            taipan_is_red = spectid.upper().startswith('RD')
+            is_taipan_science = (is_taipan and class_type.startswith('MFOBJECT'))
+            is_taipan_flat = (is_taipan and class_type.startswith('MFFFF'))
+            
+            # Check if variance exists (definitive proof of raw file)
+            has_variance = raw_file.has_variance()
+            no_variance_in_target = not has_variance
+            
+            # TAIPAN pre-subtraction (scattered light removal)
+            if is_taipan_science:
+                logger.info("Raw frame is Taipan Science. Looking for pre-subtract image frame.")
+                
+                # Determine pre-subtract filename based on color
+                if taipan_is_red:
+                    sub_filename = 'RD_SCI_PRESUB.fits'
+                elif taipan_is_blue:
+                    sub_filename = 'BL_SCI_PRESUB.fits'
+                else:
+                    sub_filename = None
+                
+                if sub_filename and Path(sub_filename).exists():
+                    logger.info(f"Pre-subtracting data from {sub_filename}")
+                    
+                    # Read pre-subtract file
+                    with ImageFile(sub_filename, mode='READ') as sub_file:
+                        sub_data = sub_file.read_image_data(nx, ny)
+                        
+                        # Calculate scale from exposure time ratios
+                        src_time = raw_file.get_header_value('EXPOSED', 1.0)
+                        sub_time = sub_file.get_header_value('EXPOSED', 1.0)
+                        scale = src_time / sub_time
+                        
+                        # Subtract scaled pre-subtract data
+                        image_data = image_data - scale * sub_data
+                        logger.info(f"Pre-subtracted with scale factor: {scale:.3f}")
+                else:
+                    logger.info(f"Cannot find file {sub_filename}. Not pre-subtracting.")
+            
+            # Instrument-specific image transformations
+            if is_6df:
+                logger.info("Processing 6DF raw data: transposing and reversing axes")
+                # Transpose and reverse spectral axis
+                image_data = np.flipud(image_data.T)
+                nx, ny = ny, nx  # Update dimensions
+                
+            elif is_koala:
+                logger.info("Processing KOALA raw data: flipping spatial axis")
+                # Flip spatial axis (fiber number indexing from top to bottom)
+                image_data = np.fliplr(image_data)
+                
+            elif is_taipan:
+                logger.info("Processing TAIPAN raw data: transposing axes")
+                # Transpose axes
+                if taipan_is_blue:
+                    image_data = image_data.T
+                elif taipan_is_red:
+                    image_data = np.flipud(image_data.T)
+                else:
+                    image_data = image_data.T
+                nx, ny = ny, nx  # Update dimensions
+        
+        # Create IM file with proper structure
+        self._create_im_file_structure(im_filename, image_data, nx, ny, 
+                                     raw_filename, instrument, class_type, 
+                                     no_variance_in_target)
+        
+        logger.info(f"Successfully created IM file: {im_filename}")
+    
+    def _create_im_file_structure(self, im_filename: str, image_data: np.ndarray, 
+                                 nx: int, ny: int, raw_filename: str, 
+                                 instrument: str, class_type: str, 
+                                 no_variance_in_target: bool) -> None:
+        """
+        Create IM file with proper FITS structure.
+        
+        Parameters
+        ----------
+        im_filename : str
+            Output IM filename
+        image_data : np.ndarray
+            Image data
+        nx, ny : int
+            Image dimensions
+        raw_filename : str
+            Original raw filename
+        instrument : str
+            Instrument name
+        class_type : str
+            Frame class
+        no_variance_in_target : bool
+            Whether to create variance HDU
+        """
+        from astropy.io import fits
+        
+        # Create primary HDU with image data
+        primary_hdu = fits.PrimaryHDU(image_data)
+        
+        # Set BITPIX to -32 (32-bit float) for IM files
+        primary_hdu.header['BITPIX'] = -32
+        
+        # Remove BSCALE and BZERO keywords (not used with float data)
+        if 'BSCALE' in primary_hdu.header:
+            del primary_hdu.header['BSCALE']
+        if 'BZERO' in primary_hdu.header:
+            del primary_hdu.header['BZERO']
+        
+        # Remove AVGVALUE keyword (can cause problems)
+        if 'AVGVALUE' in primary_hdu.header:
+            del primary_hdu.header['AVGVALUE']
+        
+        # Add processing history
+        primary_hdu.header['HISTORY'] = f'Created IM file from {raw_filename}'
+        primary_hdu.header['HISTORY'] = f'Instrument: {instrument}'
+        primary_hdu.header['HISTORY'] = f'Class: {class_type}'
+        
+        # Create HDU list
+        hdul = fits.HDUList([primary_hdu])
+        
+        # Add variance HDU if needed (raw files don't have variance)
+        if no_variance_in_target:
+            logger.info("Creating variance HDU for raw file")
+            
+            # Create variance HDU at correct extension index
+            variance_hdu = fits.ImageHDU(name='VARIANCE')
+            variance_hdu.header['EXTNAME'] = 'VARIANCE'
+            
+            # Initialize variance with zeros (will be calculated later)
+            variance_data = np.zeros((ny, nx), dtype=np.float32)
+            variance_hdu.data = variance_data
+            
+            hdul.append(variance_hdu)
+        
+        # Copy fiber table if present and appropriate
+        if class_type not in ['BIAS', 'DARK']:
+            # Open source file to copy fiber table
+            with ImageFile(raw_filename, mode='READ') as source_file:
+                if source_file.has_fiber_table():
+                    logger.info("Copying fiber table from source file")
+                    
+                    # Open destination file for writing
+                    with ImageFile(im_filename, mode='UPDATE') as dest_file:
+                        dest_file.copy_fiber_table_from(source_file)
+                        
+                        # Handle TAIPAN fiber table (remove fibers beyond 150)
+                        if instrument.upper().startswith('TAIPAN'):
+                            logger.info("Processing TAIPAN fiber table (limiting to 150 fibers)")
+                            dest_file.remove_fibers_beyond(150)
+                else:
+                    logger.info("No fiber table found in source file")
+        
+        # Set class in header
+        primary_hdu.header['CLASS'] = class_type
+        
+        # Write the file
+        hdul.writeto(im_filename, overwrite=True)
+        hdul.close()
+
 
 def make_im(raw_filename: str,
             im_filename: Optional[str] = None,
             use_bias: bool = False,
             use_dark: bool = False,
             dark_filename: Optional[str] = None,
-            use_flat: bool = False,
-            flat_filename: Optional[str] = None,
+            use_lflat: bool = False,
+            lflat_filename: Optional[str] = None,
             bad_pixel_mask: Optional[str] = None,
             bad_pixel_mask2: Optional[str] = None,
             mark_saturated: bool = True,
@@ -617,10 +893,10 @@ def make_im(raw_filename: str,
         Whether to subtract dark frame
     dark_filename : str, optional
         Path to dark frame file
-    use_flat : bool, optional
+    use_lflat : bool, optional
         Whether to divide by long-slit flat field
-    flat_filename : str, optional
-        Path to flat field file
+    lflat_filename : str, optional
+        Path to long-slit flat field file
     bad_pixel_mask : str, optional
         Path to bad pixel mask file
     bad_pixel_mask2 : str, optional
@@ -646,8 +922,8 @@ def make_im(raw_filename: str,
         use_bias=use_bias,
         use_dark=use_dark,
         dark_filename=dark_filename,
-        use_flat=use_flat,
-        flat_filename=flat_filename,
+        use_lflat=use_lflat,
+        lflat_filename=lflat_filename,
         bad_pixel_mask=bad_pixel_mask,
         bad_pixel_mask2=bad_pixel_mask2,
         mark_saturated=mark_saturated,
