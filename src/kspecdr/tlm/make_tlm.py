@@ -6,12 +6,20 @@ replacing the Fortran TDFIO functions with astropy-based equivalents.
 """
 
 import numpy as np
+import sys
 import logging
 from typing import Tuple, Optional, Dict, Any
 
 from kspecdr.io.image import ImageFile
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # Instrument codes (matching Fortran constants)
 INST_GENERIC = 0
@@ -322,19 +330,10 @@ def detect_traces(img_data: np.ndarray, order: int, pk_search_method: int,
     """
     logger.info("Detecting traces in image data")
     
-    # Placeholder implementation - this would call the actual trace detection algorithm
-    nx, ny = img_data.shape
-    
-    # For now, create dummy traces
-    n_traces = min(ny // 10, 100)  # Rough estimate
-    traces = np.zeros((nx, n_traces))
-    sigmap = np.ones((nx, n_traces)) * 1.5
-    spat_slice = np.mean(img_data, axis=0)
-    pk_posn = np.linspace(10, ny-10, n_traces)
-    
-    logger.info(f"Detected {n_traces} traces")
-    
-    return traces, sigmap, spat_slice, pk_posn
+    raise NotImplementedError(
+        "Trace detection algorithm not yet implemented. "
+        "This should implement the LOCATE_TRACES functionality from the Fortran code."
+    )
 
 
 def match_traces_to_fibres(instrument_code: int, traces: np.ndarray, 
@@ -367,12 +366,10 @@ def match_traces_to_fibres(instrument_code: int, traces: np.ndarray,
     match_vector = np.zeros(nf, dtype=int)
     modelled_fibre_positions = np.zeros(nf)
     
-    # Placeholder implementation - this would implement the actual matching logic
-    # based on the instrument-specific routines in the Fortran code
-    
-    logger.info(f"Matched {np.sum(match_vector > 0)} fibres")
-    
-    return match_vector, modelled_fibre_positions
+    raise NotImplementedError(
+        "Trace to fibre matching not yet implemented. "
+        "This should implement instrument-specific matching routines from the Fortran code."
+    )
 
 
 def convert_traces_to_tramline_map(traces: np.ndarray, match_vector: np.ndarray, nf: int) -> np.ndarray:
@@ -607,11 +604,10 @@ def predict_wavelength(im_file: ImageFile, tramline_map: np.ndarray, args: Dict[
     instrument_code = im_file.get_instrument_code()
     if instrument_code == INST_TAIPAN:
         return predict_wavelength_taipan(im_file, nx, nf)
-    # TODO: ... fallback or other instrument logic ...
-    wavelength_data = np.zeros((nx, nf))
-    for i in range(nx):
-        wavelength_data[i, :] = 5000 + i * 0.1
-    return wavelength_data
+    raise NotImplementedError(
+        f"Wavelength prediction for instrument code {instrument_code} not yet implemented. "
+        "This should implement the PREDICT_WAVELEN functionality from the Fortran code."
+    )
 
 
 def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarray:
@@ -681,9 +677,9 @@ def make_tlm_2df(im_file: ImageFile, tlm_fname: str) -> None:
     """
     logger.info("Generating tramline map for 2DF instrument")
     
-    # Placeholder implementation for 2DF-specific tramline map generation
-    # This would implement the Fortran MAKE_TLM_2DF functionality
-    
-    logger.info("2DF tramline map generation completed")
+    raise NotImplementedError(
+        "2DF-specific tramline map generation not yet implemented. "
+        "This should implement the MAKE_TLM_2DF functionality from the Fortran code."
+    )
 
 
