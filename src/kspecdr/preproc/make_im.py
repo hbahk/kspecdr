@@ -15,6 +15,7 @@ Based on the Fortran MAKE_IM routine from 2dfdr.
 """
 
 import logging
+import sys
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
@@ -33,6 +34,13 @@ except ImportError:
 from ..io.image import ImageFile
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 class MakeIM:
     """
@@ -294,6 +302,8 @@ class MakeIM:
                 image_data -= bias_level
                 logger.info("Bias subtraction method: OVERSCAN")
                 logger.info(f"Subtracted bias level: {bias_level:.2f}")
+                # TODO: add cutting of overscan region
+                logger.warning("Cutting overscan region is not implemented yet")
             
         # Write back the processed image data
         im_file.write_image_data(image_data)
@@ -401,18 +411,22 @@ class MakeIM:
         Returns
         -------
         tuple
-            (noise_array, gain_array) for each amplifier
+            (noise, gain)
         """
+            # (noise_array, gain_array) for each amplifier
         # Try to get amplifier-specific noise and gain
-        noise = np.array([im_file.get_header_value('RDNOISE1', 5.0),
-                         im_file.get_header_value('RDNOISE2', 5.0),
-                         im_file.get_header_value('RDNOISE3', 5.0),
-                         im_file.get_header_value('RDNOISE4', 5.0)])
+        # noise = np.array([im_file.get_header_value('RDNOISE1', 5.0),
+        #                  im_file.get_header_value('RDNOISE2', 5.0),
+        #                  im_file.get_header_value('RDNOISE3', 5.0),
+        #                  im_file.get_header_value('RDNOISE4', 5.0)])
         
-        gain = np.array([im_file.get_header_value('GAIN1', 1.0),
-                        im_file.get_header_value('GAIN2', 1.0),
-                        im_file.get_header_value('GAIN3', 1.0),
-                        im_file.get_header_value('GAIN4', 1.0)])
+        # gain = np.array([im_file.get_header_value('GAIN1', 1.0),
+        #                 im_file.get_header_value('GAIN2', 1.0),
+        #                 im_file.get_header_value('GAIN3', 1.0),
+        #                 im_file.get_header_value('GAIN4', 1.0)])
+        noise = im_file.get_header_value('RO_NOISE', 7.0)
+        
+        gain = im_file.get_header_value('RO_GAIN', 2.0)
         
         return noise, gain
     
@@ -425,10 +439,10 @@ class MakeIM:
         ----------
         image_data : np.ndarray
             Image data array
-        noise : np.ndarray
-            Readout noise for each amplifier
-        gain : np.ndarray
-            Gain for each amplifier
+        noise : float
+            Readout noise
+        gain : float
+            Gain
             
         Returns
         -------
@@ -436,30 +450,31 @@ class MakeIM:
             Variance array
         """
         nx, ny = image_data.shape
-        variance = np.zeros_like(image_data)
+        # variance = np.zeros_like(image_data)
+        variance = noise**2 + np.maximum(image_data, 0) / gain
         
-        # Determine amplifier layout
-        if len(noise) == 1 or np.all(noise == noise[0]):
-            # Single amplifier
-            variance = noise[0]**2 + np.maximum(image_data, 0) / gain[0]
-        elif len(noise) == 2:
-            # Two amplifiers (left/right)
-            mid_x = nx // 2
-            # Left half
-            variance[:mid_x, :] = noise[0]**2 + np.maximum(image_data[:mid_x, :], 0) / gain[0]
-            # Right half
-            variance[mid_x:, :] = noise[1]**2 + np.maximum(image_data[mid_x:, :], 0) / gain[1]
-        elif len(noise) == 4:
-            # Four amplifiers (quadrants)
-            mid_x, mid_y = nx // 2, ny // 2
-            # Bottom-left
-            variance[:mid_x, :mid_y] = noise[0]**2 + np.maximum(image_data[:mid_x, :mid_y], 0) / gain[0]
-            # Bottom-right
-            variance[mid_x:, :mid_y] = noise[1]**2 + np.maximum(image_data[mid_x:, :mid_y], 0) / gain[1]
-            # Top-right
-            variance[mid_x:, mid_y:] = noise[2]**2 + np.maximum(image_data[mid_x:, mid_y:], 0) / gain[2]
-            # Top-left
-            variance[:mid_x, mid_y:] = noise[3]**2 + np.maximum(image_data[:mid_x, mid_y:], 0) / gain[3]
+        # # Determine amplifier layout
+        # if len(noise) == 1 or np.all(noise == noise[0]):
+        #     # Single amplifier
+        #     variance = noise[0]**2 + np.maximum(image_data, 0) / gain[0]
+        # elif len(noise) == 2:
+        #     # Two amplifiers (left/right)
+        #     mid_x = nx // 2
+        #     # Left half
+        #     variance[:mid_x, :] = noise[0]**2 + np.maximum(image_data[:mid_x, :], 0) / gain[0]
+        #     # Right half
+        #     variance[mid_x:, :] = noise[1]**2 + np.maximum(image_data[mid_x:, :], 0) / gain[1]
+        # elif len(noise) == 4:
+        #     # Four amplifiers (quadrants)
+        #     mid_x, mid_y = nx // 2, ny // 2
+        #     # Bottom-left
+        #     variance[:mid_x, :mid_y] = noise[0]**2 + np.maximum(image_data[:mid_x, :mid_y], 0) / gain[0]
+        #     # Bottom-right
+        #     variance[mid_x:, :mid_y] = noise[1]**2 + np.maximum(image_data[mid_x:, :mid_y], 0) / gain[1]
+        #     # Top-right
+        #     variance[mid_x:, mid_y:] = noise[2]**2 + np.maximum(image_data[mid_x:, mid_y:], 0) / gain[2]
+        #     # Top-left
+        #     variance[:mid_x, mid_y:] = noise[3]**2 + np.maximum(image_data[:mid_x, mid_y:], 0) / gain[3]
         
         return variance
     
@@ -525,10 +540,11 @@ class MakeIM:
         # Read image data
         nx, ny = im_file.get_size()
         image_data = im_file.read_image_data(nx, ny)
+        variance_data = im_file.read_variance_data(nx, ny)
         
         if method == 'LACOSMIC':
             # Use LACosmic algorithm
-            cleaned_data = self._lacosmic_clean(image_data, **kwargs)
+            cleaned_data = self._lacosmic_clean(image_data, variance_data,im_file=im_file, **kwargs)
         elif method == 'BCLEAN':
             # Use BCLEAN algorithm
             cleaned_data = self._bclean_clean(image_data, **kwargs)
@@ -545,7 +561,7 @@ class MakeIM:
         # Add history record
         im_file.add_history(f"Removed cosmic rays using {method}")
     
-    def _lacosmic_clean(self, image_data: np.ndarray, **kwargs) -> np.ndarray:
+    def _lacosmic_clean(self, image_data: np.ndarray, variance_data: np.ndarray, im_file: Optional[ImageFile] = None, **kwargs) -> np.ndarray:
         """
         Clean cosmic rays using LACosmic algorithm via astroscrappy.
         
@@ -553,13 +569,17 @@ class MakeIM:
         ----------
         image_data : np.ndarray
             Image data to clean
+        variance_data : np.ndarray
+            Variance data to clean
+        im_file : ImageFile, optional
+            The image file object to read header keywords (for gain/readnoise)
         **kwargs
             Additional parameters for LACosmic:
             - sigclip: sigma clipping threshold (default: 4.5)
             - sigfrac: fraction of sigma clipping (default: 0.3)
             - objlim: object limit (default: 5.0)
-            - gain: gain value (default: None, auto-detect)
-            - readnoise: read noise (default: None, auto-detect)
+            - gain: gain value (default: None, auto-detect from header)
+            - readnoise: read noise (default: None, auto-detect from header)
             - satlevel: saturation level (default: None)
             - verbose: verbose output (default: False)
             
@@ -577,18 +597,31 @@ class MakeIM:
         # Default parameters for astroscrappy
         # TODO: add gain, readnoise, satlevel
         default_params = {
-            'sigclip': 4.5,
-            'sigfrac': 0.3,
+            'sigclip': 10.0,
+            'sigfrac': 0.5,
             'objlim': 5.0,
             'gain': None,
             'readnoise': None,
-            'satlevel': None,
+            # 'satlevel': self.saturation_value,
+            'satlevel': np.inf,
             'verbose': False
         }
         
         # Update with any provided kwargs
         params = default_params.copy()
         params.update(kwargs)
+        
+        # If gain/readnoise not set, try to read from header (RO_GAIN, RO_NOISE)
+        if im_file is not None:
+            readnoise, gain = self._get_noise_gain_info(im_file)
+            if params['gain'] is None:
+                if gain is not None:
+                    params['gain'] = gain
+                    logger.info(f"Using gain from header (RO_GAIN): {gain}")
+            if params['readnoise'] is None:
+                if readnoise is not None:
+                    params['readnoise'] = readnoise
+                    logger.info(f"Using readnoise from header (RO_NOISE): {readnoise}")
         
         logger.info("Running LACosmic cosmic ray removal with astroscrappy")
         logger.info(f"Parameters: {params}")
@@ -598,13 +631,15 @@ class MakeIM:
             # This returns (mask, cleaned_data)
             mask, cleaned_data = astroscrappy.detect_cosmics(
                 image_data,
+                # invar=variance_data,
                 sigclip=params['sigclip'],
                 sigfrac=params['sigfrac'],
                 objlim=params['objlim'],
                 gain=params['gain'],
                 readnoise=params['readnoise'],
                 satlevel=params['satlevel'],
-                verbose=params['verbose']
+                verbose=params['verbose'],
+                sepmed=False
             )
             
             # Count cosmic rays detected
@@ -801,8 +836,13 @@ class MakeIM:
         """
         from astropy.io import fits
         
+        # Open source file for header and fiber table
+        source_file = ImageFile(raw_filename, mode='READ')
+        source_file.open()
+        header = source_file.hdul[source_file.hdul.index_of("PRIMARY")].header
+        
         # Create primary HDU with image data
-        primary_hdu = fits.PrimaryHDU(image_data)
+        primary_hdu = fits.PrimaryHDU(image_data, header=header)
         
         # Set BITPIX to -32 (32-bit float) for IM files
         primary_hdu.header['BITPIX'] = -32
@@ -842,20 +882,22 @@ class MakeIM:
         # Copy fiber table if present and appropriate
         if class_type not in ['BIAS', 'DARK']:
             # Open source file to copy fiber table
-            with ImageFile(raw_filename, mode='READ') as source_file:
-                if source_file.has_fiber_table():
-                    logger.info("Copying fiber table from source file")
+            if source_file.has_fiber_table():
+                logger.info("Copying fiber table from source file")
+                
+                # Open destination file for writing
+                with ImageFile(im_filename, mode='UPDATE') as dest_file:
+                    dest_file.copy_fiber_table_from(source_file)
                     
-                    # Open destination file for writing
-                    with ImageFile(im_filename, mode='UPDATE') as dest_file:
-                        dest_file.copy_fiber_table_from(source_file)
-                        
-                        # Handle TAIPAN fiber table (remove fibers beyond 150)
-                        if instrument.upper().startswith('TAIPAN'):
-                            logger.info("Processing TAIPAN fiber table (limiting to 150 fibers)")
-                            dest_file.remove_fibers_beyond(150)
-                else:
-                    logger.info("No fiber table found in source file")
+                    # Handle TAIPAN fiber table (remove fibers beyond 150)
+                    if instrument.upper().startswith('TAIPAN'):
+                        logger.info("Processing TAIPAN fiber table (limiting to 150 fibers)")
+                        dest_file.remove_fibers_beyond(150)
+            else:
+                logger.info("No fiber table found in source file")
+        
+        # close source file
+        source_file.close()
         
         # Set class in header
         primary_hdu.header['CLASS'] = class_type

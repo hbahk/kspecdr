@@ -20,8 +20,16 @@ import numpy as np
 from astropy.io import fits
 from typing import Tuple, Optional, Dict, Any
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 class ImageFile:
@@ -437,7 +445,8 @@ class ImageFile:
             
         # Check for fiber table HDU
         for hdu in self.hdul:
-            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+            # if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+            if "FIBRES" in hdu.name:
                 return True
         return False
 
@@ -471,7 +480,7 @@ class ImageFile:
         # Find fiber table HDU
         fiber_hdu = None
         for hdu in self.hdul:
-            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+            if "FIBRES" in hdu.name:
                 fiber_hdu = hdu
                 break
                 
@@ -522,10 +531,10 @@ class ImageFile:
             
         # Determine table name
         table_name = 'FIBRES'
-        for hdu in source_file.hdul:
-            if hdu.name in ['FIBRES', 'FIBRES_IFU']:
-                table_name = hdu.name
-                break
+        # for hdu in source_file.hdul:
+        #     if hdu.name in ['FIBRES', 'FIBRES_IFU']:
+        #         table_name = hdu.name
+        #         break
         
         # Write fiber table to current file
         self.write_fiber_table(fiber_data, table_name)
