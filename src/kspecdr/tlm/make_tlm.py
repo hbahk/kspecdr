@@ -106,7 +106,7 @@ def make_tlm_other(
     logger.info("Starting tramline map generation for non-2DF instrument")
 
     # Step 0: Pre-amble - Read image data and get instrument information
-    img_data, var_data, fibre_types, spectid = read_instrument_data(
+    img_data, var_data, fibre_types = read_instrument_data(
         im_file, instrument_code
     )
 
@@ -173,7 +173,7 @@ def make_tlm_other(
 
 def read_instrument_data(
     im_file: ImageFile, instrument_code: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Read instrument data from image file.
 
@@ -187,17 +187,13 @@ def read_instrument_data(
     Returns
     -------
     tuple
-        (img_data, var_data, fibre_types, spectid)
+        (img_data, var_data, fibre_types)
     """
     nx, ny = im_file.get_size()
     img_data = im_file.read_image_data(nx, ny)
     var_data = im_file.read_variance_data(nx, ny)
     fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES)
-    spectid = ""
-    if instrument_code == INST_HERMES:
-        spectid, _ = im_file.read_header_keyword("SPECTID")
-        logger.info(f"HERMES SPECTID: {spectid}")
-    return img_data, var_data, fibre_types, spectid
+    return img_data, var_data, fibre_types
 
 
 def set_instrument_specific_params(
