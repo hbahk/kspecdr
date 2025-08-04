@@ -164,6 +164,9 @@ class MakeIM:
                     logger.info(f"Removing cosmic rays using {cosmic_ray_method}...")
                 self._remove_cosmic_rays(im_file, cosmic_ray_method, **kwargs)
         
+            # Step 8: Save the updated IM file
+            im_file.save_as(im_filename)
+        
         if self.verbose:
             logger.info(f"Image data frame {im_filename} created.")
         
@@ -424,9 +427,9 @@ class MakeIM:
         #                 im_file.get_header_value('GAIN2', 1.0),
         #                 im_file.get_header_value('GAIN3', 1.0),
         #                 im_file.get_header_value('GAIN4', 1.0)])
-        noise = im_file.get_header_value('RO_NOISE', 7.0)
+        noise = im_file.get_header_value('RO_NOISE', 7.0) # TODO: fix silent replacement
         
-        gain = im_file.get_header_value('RO_GAIN', 2.0)
+        gain = im_file.get_header_value('RO_GAIN', 2.0) # TODO: fix silent replacement
         
         return noise, gain
     
@@ -452,6 +455,7 @@ class MakeIM:
         nx, ny = image_data.shape
         # variance = np.zeros_like(image_data)
         variance = noise**2 + np.maximum(image_data, 0) / gain
+        # logger.info(f"noise: {noise}, gain: {gain}, zero variance? {np.any(variance == 0)}")
         
         # # Determine amplifier layout
         # if len(noise) == 1 or np.all(noise == noise[0]):
@@ -879,6 +883,13 @@ class MakeIM:
             
             hdul.append(variance_hdu)
         
+        # Set class in header
+        primary_hdu.header['CLASS'] = class_type
+        
+        # Write the file
+        hdul.writeto(im_filename, overwrite=True)
+        hdul.close()
+        
         # Copy fiber table if present and appropriate
         if class_type not in ['BIAS', 'DARK']:
             # Open source file to copy fiber table
@@ -893,18 +904,12 @@ class MakeIM:
                     if instrument.upper().startswith('TAIPAN'):
                         logger.info("Processing TAIPAN fiber table (limiting to 150 fibers)")
                         dest_file.remove_fibers_beyond(150)
+                        
             else:
                 logger.info("No fiber table found in source file")
         
         # close source file
         source_file.close()
-        
-        # Set class in header
-        primary_hdu.header['CLASS'] = class_type
-        
-        # Write the file
-        hdul.writeto(im_filename, overwrite=True)
-        hdul.close()
 
 
 def make_im(raw_filename: str,
