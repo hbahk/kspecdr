@@ -9,6 +9,11 @@ import numpy as np
 import sys
 import logging
 from typing import Tuple, Optional, Dict, Any
+from scipy import ndimage
+from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
+from scipy.spatial.distance import pdist, squareform
+from scipy.cluster.hierarchy import linkage, fcluster
 
 from kspecdr.io.image import ImageFile
 
@@ -121,24 +126,25 @@ def make_tlm_other(
     )
 
     # Step 3: Count fibre types
-    n_officially_inuse = count_fibres_with_trace(fibre_has_trace, "YES")
-    n_potentially_able = count_fibres_with_trace(fibre_has_trace, "MAYBE")
-    n_officially_dead = count_fibres_with_trace(fibre_has_trace, "NO")
+    n_officially_inuse = np.sum(fibre_has_trace == "YES")
+    n_potentially_able = np.sum(fibre_has_trace == "MAYBE")
+    n_officially_dead = np.sum(fibre_has_trace == "NO")
 
     logger.info(f"Fibres officially in use: {n_officially_inuse}")
     logger.info(f"Fibres potentially able: {n_potentially_able}")
     logger.info(f"Fibres officially dead: {n_officially_dead}")
 
-    # Step 4: Find fibre traces across the image
-    traces, sigmap, spat_slice, pk_posn = detect_traces(
-        img_data,
-        order,
-        pk_search_method,
-        do_distortion,
-        sparse_fibs,
-        experimental,
-        qad_pksearch,
+    # Step 4: Find fiber traces across the image
+    nx, ny = img_data.shape
+    max_ntraces = len(fibre_types)
+    nf = len(fibre_types)
+    
+    ntraces, traces, spat_slice, pk_posn = detect_traces(
+        img_data, nx, ny, max_ntraces, nf, order, sparse_fibs, 
+        experimental, pk_search_method, do_distortion
     )
+    
+    logger.info(f"Found {ntraces} traces across the image")
 
     # Step 5: Match located traces to fibre index
     match_vector, modelled_fibre_positions = match_traces_to_fibres(
@@ -305,67 +311,282 @@ def convert_fibre_types_to_trace_status(
     return fibre_has_trace
 
 
-def count_fibres_with_trace(fibre_has_trace: np.ndarray, status: str) -> int:
-    """
-    Count fibres with specific trace status.
-
-    Parameters
-    ----------
-    fibre_has_trace : np.ndarray
-        Array of trace status
-    status : str
-        Status to count ('YES', 'NO', 'MAYBE')
-
-    Returns
-    -------
-    int
-        Count of fibres with specified status
-    """
-    return np.sum(fibre_has_trace == status)
-
-
 def detect_traces(
-    img_data: np.ndarray,
-    order: int,
-    pk_search_method: int,
-    do_distortion: bool,
-    sparse_fibs: bool,
-    experimental: bool,
-    qad_pksearch: bool,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    img_data: np.ndarray, 
+    nx: int, 
+    ny: int, 
+    max_ntraces: int, 
+    nf: int, 
+    order: int = 4, 
+    sparse_fibs: bool = False, 
+    experimental: bool = False, 
+    pk_search_mthd: int = 0, 
+    dodist: bool = True
+) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Detect traces in image data.
-
+    Detect fiber traces across an image.
+    
+    This function examines IMG_DATA(NX,NY) for identifiable fibre traces and creates
+    a traces pathlist array. It returns a representation of a spatial profile slice
+    and peak list that can be used for other analysis.
+    
     This function replaces the Fortran LOCATE_TRACES call.
-
+    
     Parameters
     ----------
     img_data : np.ndarray
-        Image data
-    order : int
-        Polynomial order for fitting
-    pk_search_method : int
-        Peak search method
-    do_distortion : bool
-        Whether to do distortion modelling
-    sparse_fibs : bool
-        Whether fibres are sparse
-    experimental : bool
-        Whether to use experimental settings
-    qad_pksearch : bool
-        Whether to use quick and dirty peak search
-
+        Image data of shape (nx, ny)
+    nx, ny : int
+        Dimensions of the image
+    max_ntraces : int
+        Maximum number of traces to return
+    nf : int
+        Number of fibers in instrument
+    order : int, optional
+        Order of polynomial fitting (default: 4)
+    sparse_fibs : bool, optional
+        If there is only a sparse number of fibers (default: False)
+    experimental : bool, optional
+        If to use experimental restrictions for blurred data (default: False)
+    pk_search_mthd : int, optional
+        Peak search method: 0=standard, 1=local peaks, 2=wavelet (default: 0)
+    dodist : bool, optional
+        Whether to do distortion modeling (default: True)
+    
     Returns
     -------
     tuple
-        (traces, sigmap, spat_slice, pk_posn)
+        (ntraces, tracea, rep_slice, rep_pkpos)
+        ntraces : int
+            Number of traces found
+        tracea : np.ndarray
+            Trace array of shape (nx, max_ntraces)
+        rep_slice : np.ndarray
+            Representation profile slice of shape (ny,)
+        rep_pkpos : np.ndarray
+            Representation slice peak list of shape (ny,)
     """
-    logger.info("Detecting traces in image data")
+    
+    # Heuristic parameters (from Fortran code)
+    STEP = 50  # Step size for column sweep
+    HWID = 10  # Half width for averaging around columns
+    MAXD = 4.0  # Maximum displacement expected for fiber traces
+    
+    # Initialize arrays
+    tracea = np.zeros((nx, max_ntraces))
+    rep_slice = np.zeros(ny)
+    rep_pkpos = np.zeros(ny)
+    
+    # Calculate number of steps
+    nsteps = (nx - 1) // STEP + 1
+    
+    # Arrays to store peak information
+    pk_grid = np.zeros((nsteps, max_ntraces))
+    trace_pts = np.zeros((max_ntraces, nsteps))
+    
+    # Step 1: Sweep the image to find fiber peaks in selected columns
+    logger.info("Sweeping image for signs of fibre traces...")
+    
+    # Vectorized column processing
+    col_indices = np.arange(0, nx, STEP)
+    if col_indices[-1] >= nx:
+        col_indices = col_indices[:-1]
+    
+    for stepno, colno in enumerate(col_indices):
+        # Progress feedback
+        perc = float(colno) / float(nx) * 100.0
+        logger.info(f"Processing column {colno}/{nx} ({perc:.1f}%)")
+        
+        # Create a vector slice by averaging around column colno (vectorized)
+        col_start = max(0, colno - HWID)
+        col_end = min(nx, colno + HWID + 1)
+        
+        # Extract column range and average
+        col_range = img_data[col_start:col_end, :]
+        valid_mask = ~np.isnan(col_range)
+        
+        # Compute average along column axis, handling NaN values
+        col_data = np.zeros(ny)
+        ngood = np.sum(valid_mask, axis=0)
+        valid_cols = ngood > 0
+        
+        if np.any(valid_cols):
+            col_data[valid_cols] = np.nansum(col_range[:, valid_cols], axis=0) / ngood[valid_cols]
+        
+        # Locate fiber peaks in this slice
+        if pk_search_mthd == 0:
+            # Standard peak finding using scipy with adaptive height threshold
+            max_val = np.nanmax(col_data)
+            if max_val > 0:
+                height_threshold = 0.1 * max_val
+                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+            else:
+                peaks = np.array([], dtype=int)
+            
+        elif pk_search_mthd == 1:
+            # Quick and dirty method - find all local maxima
+            peaks, _ = find_peaks(col_data, distance=2)
+            
+            # Filter peaks below 10% of maximum
+            if len(peaks) > 0:
+                max_height = np.max(col_data[peaks])
+                mask = col_data[peaks] >= 0.1 * max_height
+                peaks = peaks[mask]
+            
+        elif pk_search_mthd == 2:
+            # Wavelet convolution method (simplified)
+            # For now, use standard peak finding
+            # TODO: Implement wavelet convolution method
+            max_val = np.nanmax(col_data)
+            if max_val > 0:
+                height_threshold = 0.1 * max_val
+                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+            else:
+                peaks = np.array([], dtype=int)
+        
+        else:
+            # Default to standard method
+            max_val = np.nanmax(col_data)
+            if max_val > 0:
+                height_threshold = 0.1 * max_val
+                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+            else:
+                peaks = np.array([], dtype=int)
+        
+        # Store peak information
+        npks = len(peaks)
+        if npks > 0:
+            p_pks = peaks.astype(float)
+            pk_grid[stepno, :npks] = p_pks
+        
+        # Store central slice data for representation
+        if stepno == nsteps // 2:
+            rep_slice = col_data.copy()
+            rep_pkpos[:npks] = p_pks
+    
+    # Step 2: Link peak locations into fiber traces
+    logger.info("Linking trace data to build fibre Tramline Map...")
+    
+    # linking algorithm using clustering approach (different from 2dfdr)
+    ntraces, trace_pts = _link_peaks_to_traces(pk_grid, nsteps, max_ntraces, MAXD)
+    
+    logger.info(f"Found {ntraces} traces across the image")
+    
+    # Step 3: Interpolate across linked points of each identified trace
+    logger.info("Interpolating trace paths...")
+    
+    x_fit = np.arange(1, nx + 1) - 0.5
+    
+    for idx in range(ntraces):
+        # Get valid points for this trace
+        valid_mask = trace_pts[idx, :] > 0
+        if not np.any(valid_mask):
+            continue
+            
+        x_valid = np.arange(1, nx + 1, STEP)[valid_mask] - 0.5
+        y_valid = trace_pts[idx, valid_mask]
+        
+        if len(x_valid) < 3:
+            # Need at least 3 points for polynomial fitting
+            continue
+        
+        # Fit polynomial to trace points
+        try:
+            if order > 4:
+                # Use higher order polynomial with regularization
+                poly_order = min(order, len(x_valid) - 1)
+                coeffs = np.polyfit(x_valid, y_valid, poly_order)
+            else:
+                # Use quadratic fit
+                poly_order = min(2, len(x_valid) - 1)
+                coeffs = np.polyfit(x_valid, y_valid, poly_order)
+            
+            # Evaluate polynomial across full x range
+            y_fit = np.polyval(coeffs, x_fit)
+            tracea[:, idx] = y_fit
+            
+        except (np.RankWarning, ValueError):
+            # If fitting fails, use linear interpolation
+            tracea[:, idx] = np.interp(x_fit, x_valid, y_valid)
+    
+    # Update ntraces to actual number of valid traces
+    ntraces = np.sum([np.any(tracea[:, i] != 0) for i in range(max_ntraces)])
+    
+    logger.info(f"Final number of traces: {ntraces}")
+    
+    return ntraces, tracea, rep_slice, rep_pkpos
 
-    raise NotImplementedError(
-        "Trace detection algorithm not yet implemented. "
-        "This should implement the LOCATE_TRACES functionality from the Fortran code."
-    )
+
+def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, max_displacement: float) -> Tuple[int, np.ndarray]:
+    """
+    Link peak locations into fiber traces using clustering approach.
+    
+    Parameters
+    ----------
+    pk_grid : np.ndarray
+        Peak grid array
+    nsteps : int
+        Number of steps
+    max_ntraces : int
+        Maximum number of traces
+    max_displacement : float
+        Maximum displacement between consecutive peaks
+    
+    Returns
+    -------
+    tuple
+        (ntraces, trace_pts)
+        ntraces : int
+            Number of traces found
+        trace_pts : np.ndarray
+            Trace points array of shape (max_ntraces, nsteps)
+    """
+    
+    # Collect all valid peaks with their positions
+    peak_positions = []
+    peak_steps = []
+    
+    for stepno in range(nsteps):
+        peaks_in_step = pk_grid[stepno, :]
+        valid_peaks = peaks_in_step[peaks_in_step > 0]
+        
+        for peak in valid_peaks:
+            peak_positions.append(peak)
+            peak_steps.append(stepno)
+    
+    if len(peak_positions) == 0:
+        return 0
+    
+    # Convert to numpy arrays
+    peak_positions = np.array(peak_positions)
+    peak_steps = np.array(peak_steps)
+    
+    # Create feature matrix for clustering
+    # Features: [position, step_number]
+    features = np.column_stack([peak_positions, peak_steps])
+    
+    # Calculate distance matrix
+    distances = pdist(features, metric='euclidean')
+    
+    # Perform hierarchical clustering
+    linkage_matrix = linkage(distances, method='single')
+    
+    # Determine number of clusters (traces)
+    # Use distance threshold based on max_displacement
+    n_clusters = len(np.unique(fcluster(linkage_matrix, max_displacement, criterion='distance')))
+    n_clusters = min(n_clusters, max_ntraces)
+    
+    # Assign peaks to clusters
+    cluster_labels = fcluster(linkage_matrix, max_displacement, criterion='distance')
+    
+    # Create trace points array
+    trace_pts = np.zeros((max_ntraces, nsteps))
+    
+    for i, (pos, step, label) in enumerate(zip(peak_positions, peak_steps, cluster_labels)):
+        if label <= max_ntraces:
+            trace_pts[label - 1, step] = pos
+    
+    return n_clusters, trace_pts
 
 
 def match_traces_to_fibres(
