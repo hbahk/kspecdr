@@ -521,6 +521,9 @@ def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, ma
     """
     Link peak locations into fiber traces using clustering approach.
     
+    This function implements a simplified version of the Fortran PK_GRID2TRACES
+    algorithm, using hierarchical clustering instead of Multi-Target Tracking.
+    
     Parameters
     ----------
     pk_grid : np.ndarray
@@ -555,38 +558,69 @@ def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, ma
             peak_steps.append(stepno)
     
     if len(peak_positions) == 0:
-        return 0
+        return 0, np.zeros((max_ntraces, nsteps))
     
     # Convert to numpy arrays
     peak_positions = np.array(peak_positions)
     peak_steps = np.array(peak_steps)
     
     # Create feature matrix for clustering
-    # Features: [position, step_number]
+    # Features: [position, step_number] - similar to Fortran's temporal sequence
     features = np.column_stack([peak_positions, peak_steps])
     
     # Calculate distance matrix
     distances = pdist(features, metric='euclidean')
     
-    # Perform hierarchical clustering
+    # Perform hierarchical clustering (single linkage for continuity)
     linkage_matrix = linkage(distances, method='single')
     
-    # Determine number of clusters (traces)
-    # Use distance threshold based on max_displacement
-    n_clusters = len(np.unique(fcluster(linkage_matrix, max_displacement, criterion='distance')))
-    n_clusters = min(n_clusters, max_ntraces)
-    
-    # Assign peaks to clusters
+    # Determine number of clusters (traces) using distance threshold
     cluster_labels = fcluster(linkage_matrix, max_displacement, criterion='distance')
+    unique_clusters = np.unique(cluster_labels)
+    n_clusters = len(unique_clusters)
+    n_clusters = min(n_clusters, max_ntraces)
     
     # Create trace points array
     trace_pts = np.zeros((max_ntraces, nsteps))
     
+    # Step 1: Assign peaks to traces (similar to Fortran's MTT output)
     for i, (pos, step, label) in enumerate(zip(peak_positions, peak_steps, cluster_labels)):
         if label <= max_ntraces:
             trace_pts[label - 1, step] = pos
     
-    return n_clusters, trace_pts
+    # Step 2: Filter traces with significant number of points (like Fortran's 50% threshold)
+    significant_traces = []
+    for trace_idx in range(n_clusters):
+        n_points = np.sum(trace_pts[trace_idx, :] > 0)
+        if n_points > 0.5 * nsteps:  # Same threshold as Fortran
+            significant_traces.append(trace_idx)
+    
+    ntraces = len(significant_traces)
+    
+    # Step 3: Sort traces by median position (like Fortran's sorting)
+    if ntraces > 0:
+        trace_medians = []
+        for trace_idx in significant_traces:
+            valid_points = trace_pts[trace_idx, :]
+            valid_points = valid_points[valid_points > 0]
+            if len(valid_points) > 0:
+                median_pos = np.median(valid_points)
+            else:
+                median_pos = 0.0
+            trace_medians.append(median_pos)
+        
+        # Sort by median position (ascending order)
+        sorted_indices = np.argsort(trace_medians)
+        significant_traces = [significant_traces[i] for i in sorted_indices]
+        
+        # Create final trace array with sorted traces
+        final_trace_pts = np.zeros((max_ntraces, nsteps))
+        for i, trace_idx in enumerate(significant_traces):
+            final_trace_pts[i, :] = trace_pts[trace_idx, :]
+        
+        return ntraces, final_trace_pts
+    
+    return 0, np.zeros((max_ntraces, nsteps))
 
 
 def match_traces_to_fibres(
