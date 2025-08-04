@@ -11,7 +11,7 @@ Usage example:
         nx, ny = im_file.get_size()
         img = im_file.read_image_data(nx, ny)
         var = im_file.read_variance_data(nx, ny)
-        fibre_types, nf = im_file.read_fibre_types(1000)
+        fibre_types, nf = im_file.read_fiber_types(1000)
         value, comment = im_file.read_header_keyword('SPECTID')
         code = im_file.get_instrument_code()
 """
@@ -335,7 +335,7 @@ class ImageFile:
         return header.get(keyword, default)
         
         
-    def read_fibre_types(self, max_nfibres: int) -> Tuple[np.ndarray, int]:
+    def read_fiber_types(self, max_nfibres: int) -> Tuple[np.ndarray, int]:
         """
         Read fibre type information.
         
@@ -347,32 +347,20 @@ class ImageFile:
         Returns
         -------
         tuple
-            (fibre_types, nf) - fibre type array and number of fibres
+            (fiber_types, nf) - fiber type array and number of fibers
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
-            
-        # Try to read fibre types from header keywords
-        fibre_types = np.full(max_nfibres, 'N', dtype='U1')  # Default to 'N' (Not used)
         
-        header = self.hdul[0].header
-        nf = 0
-        
-        # Look for fibre type keywords
-        for i in range(1, max_nfibres + 1):
-            key = f'FIB{i:03d}TYP'
-            if key in header:
-                fibre_types[i-1] = header[key]
-                nf = max(nf, i)
-                
-        # If no fibre types found in header, try to estimate from image
-        if nf == 0:
-            nx, ny = self.get_size()
-            # Assume fibres are along the spatial direction
-            nf = min(ny, max_nfibres)
-            logger.info(f"No fibre types in header, assuming {nf} fibres")
+        if self.has_fiber_table():
+            fiber_table = self.read_fiber_table()
+            fiber_types = fiber_table["TYPE"]
+            nf = len(fiber_types)
+        else:
+            fiber_types = np.full(max_nfibres, 'N', dtype='U1')  # Default to 'N' (Not used)
+            nf = 0
             
-        return fibre_types, nf
+        return fiber_types, nf
         
     def get_instrument_code(self) -> int:
         """

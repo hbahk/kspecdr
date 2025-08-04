@@ -192,7 +192,7 @@ def read_instrument_data(
     nx, ny = im_file.get_size()
     img_data = im_file.read_image_data(nx, ny)
     var_data = im_file.read_variance_data(nx, ny)
-    fibre_types, nf = im_file.read_fibre_types(MAX__NFIBRES)
+    fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES)
     spectid = ""
     if instrument_code == INST_HERMES:
         spectid, _ = im_file.read_header_keyword("SPECTID")
