@@ -111,9 +111,7 @@ def make_tlm_other(
     logger.info("Starting tramline map generation for non-2DF instrument")
 
     # Step 0: Pre-amble - Read image data and get instrument information
-    img_data, var_data, fibre_types = read_instrument_data(
-        im_file, instrument_code
-    )
+    img_data, var_data, fibre_types = read_instrument_data(im_file, instrument_code)
 
     # Step 1: Set instrument-specific parameters
     order, pk_search_method, do_distortion, sparse_fibs, experimental, qad_pksearch = (
@@ -138,12 +136,20 @@ def make_tlm_other(
     nx, ny = img_data.shape
     max_ntraces = len(fibre_types)
     nf = len(fibre_types)
-    
+
     ntraces, traces, spat_slice, pk_posn = detect_traces(
-        img_data, nx, ny, max_ntraces, nf, order, sparse_fibs, 
-        experimental, pk_search_method, do_distortion
+        img_data,
+        nx,
+        ny,
+        max_ntraces,
+        nf,
+        order,
+        sparse_fibs,
+        experimental,
+        pk_search_method,
+        do_distortion,
     )
-    
+
     logger.info(f"Found {ntraces} traces across the image")
 
     # Step 5: Match located traces to fibre index
@@ -312,26 +318,26 @@ def convert_fibre_types_to_trace_status(
 
 
 def detect_traces(
-    img_data: np.ndarray, 
-    nx: int, 
-    ny: int, 
-    max_ntraces: int, 
-    nf: int, 
-    order: int = 4, 
-    sparse_fibs: bool = False, 
-    experimental: bool = False, 
-    pk_search_mthd: int = 0, 
-    dodist: bool = True
+    img_data: np.ndarray,
+    nx: int,
+    ny: int,
+    max_ntraces: int,
+    nf: int,
+    order: int = 4,
+    sparse_fibs: bool = False,
+    experimental: bool = False,
+    pk_search_mthd: int = 0,
+    dodist: bool = True,
 ) -> Tuple[int, np.ndarray, np.ndarray, np.ndarray]:
     """
     Detect fiber traces across an image.
-    
+
     This function examines IMG_DATA(NX,NY) for identifiable fibre traces and creates
     a traces pathlist array. It returns a representation of a spatial profile slice
     and peak list that can be used for other analysis.
-    
+
     This function replaces the Fortran LOCATE_TRACES call.
-    
+
     Parameters
     ----------
     img_data : np.ndarray
@@ -352,7 +358,7 @@ def detect_traces(
         Peak search method: 0=standard, 1=local peaks, 2=wavelet (default: 0)
     dodist : bool, optional
         Whether to do distortion modeling (default: True)
-    
+
     Returns
     -------
     tuple
@@ -366,60 +372,64 @@ def detect_traces(
         rep_pkpos : np.ndarray
             Representation slice peak list of shape (ny,)
     """
-    
+
     # Heuristic parameters (from Fortran code)
     STEP = 50  # Step size for column sweep
     HWID = 10  # Half width for averaging around columns
     MAXD = 4.0  # Maximum displacement expected for fiber traces
-    
+
     # Initialize arrays
     tracea = np.zeros((nx, max_ntraces))
     rep_slice = np.zeros(ny)
     rep_pkpos = np.zeros(ny)
-    
+
     # Calculate number of steps
     nsteps = (nx - 1) // STEP + 1
-    
+
     # Arrays to store peak information
     pk_grid = np.zeros((nsteps, max_ntraces))
     trace_pts = np.zeros((max_ntraces, nsteps))
-    
+
     # Step 1: Sweep the image to find fiber peaks in selected columns
     logger.info("Sweeping image for signs of fibre traces...")
-    
+
     # Vectorized column processing
     col_indices = np.arange(0, nx, STEP)
     if col_indices[-1] >= nx:
         col_indices = col_indices[:-1]
-    
+
     for stepno, colno in enumerate(col_indices):
         # Progress feedback
         perc = float(colno) / float(nx) * 100.0
         logger.info(f"Processing column {colno}/{nx} ({perc:.1f}%)")
-        
+
         # Create a vector slice by averaging around column colno (vectorized)
         col_start = max(0, colno - HWID)
         col_end = min(nx, colno + HWID + 1)
-        
+
         # Extract column range and average
         col_range = img_data[col_start:col_end, :]
         valid_mask = ~np.isnan(col_range)
-        
+
         # Compute average along column axis, handling NaN values
         col_data = np.zeros(ny)
         ngood = np.sum(valid_mask, axis=0)
         valid_cols = ngood > 0
-        
+
         if np.any(valid_cols):
-            col_data[valid_cols] = np.nansum(col_range[:, valid_cols], axis=0) / ngood[valid_cols]
-        
+            col_data[valid_cols] = (
+                np.nansum(col_range[:, valid_cols], axis=0) / ngood[valid_cols]
+            )
+
         # Locate fiber peaks in this slice
         if pk_search_mthd == 0:
             # Standard peak finding using scipy with adaptive height threshold
             max_val = np.nanmax(col_data)
             if max_val > 0:
                 height_threshold = 0.1 * max_val
-                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+                peaks, properties = find_peaks(
+                    col_data, height=height_threshold, distance=3
+                )
                 # Select the highest peaks until the max_ntraces is reached
                 if len(peaks) > max_ntraces:
                     peak_heights = properties["peak_heights"]
@@ -427,23 +437,23 @@ def detect_traces(
                     peaks = peaks[sorted_indices[:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
-            
+
         elif pk_search_mthd == 1:
             # Quick and dirty method - find all local maxima
             peaks, _ = find_peaks(col_data, distance=2)
-            
+
             # Filter peaks below 10% of maximum
             if len(peaks) > 0:
                 max_height = np.max(col_data[peaks])
                 mask = col_data[peaks] >= 0.1 * max_height
                 peaks = peaks[mask]
-                
+
                 # Select the highest peaks until the max_ntraces is reached
                 if len(peaks) > max_ntraces:
                     peak_heights = col_data[peaks]
                     sorted_indices = np.argsort(peak_heights)[::-1]
                     peaks = peaks[sorted_indices[:max_ntraces]]
-            
+
         elif pk_search_mthd == 2:
             # Wavelet convolution method
             peaks = _wavelet_peak_detection(col_data, scale=2.0, max_peaks=max_ntraces)
@@ -452,13 +462,15 @@ def detect_traces(
                 peaks = peaks.astype(int)
             else:
                 peaks = np.array([], dtype=int)
-        
+
         else:
             # Default to standard method
             max_val = np.nanmax(col_data)
             if max_val > 0:
                 height_threshold = 0.1 * max_val
-                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+                peaks, properties = find_peaks(
+                    col_data, height=height_threshold, distance=3
+                )
                 # Select the highest peaks until the max_ntraces is reached
                 if len(peaks) > max_ntraces:
                     peak_heights = properties["peak_heights"]
@@ -466,44 +478,44 @@ def detect_traces(
                     peaks = peaks[sorted_indices[:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
-        
+
         # Store peak information
         npks = len(peaks)
         if npks > 0:
             p_pks = peaks.astype(float)
             pk_grid[stepno, :npks] = p_pks
-        
+
         # Store central slice data for representation
         if stepno == nsteps // 2:
             rep_slice = col_data.copy()
             rep_pkpos[:npks] = p_pks
-    
+
     # Step 2: Link peak locations into fiber traces
     logger.info("Linking trace data to build fibre Tramline Map...")
-    
+
     # linking algorithm using clustering approach (different from 2dfdr)
     ntraces, trace_pts = _link_peaks_to_traces(pk_grid, nsteps, max_ntraces, MAXD)
-    
+
     logger.info(f"Found {ntraces} traces across the image")
-    
+
     # Step 3: Interpolate across linked points of each identified trace
     logger.info("Interpolating trace paths...")
-    
+
     x_fit = np.arange(1, nx + 1) - 0.5
-    
+
     for idx in range(ntraces):
         # Get valid points for this trace
         valid_mask = trace_pts[idx, :] > 0
         if not np.any(valid_mask):
             continue
-            
+
         x_valid = np.arange(1, nx + 1, STEP)[valid_mask] - 0.5
         y_valid = trace_pts[idx, valid_mask]
-        
+
         if len(x_valid) < 3:
             # Need at least 3 points for polynomial fitting
             continue
-        
+
         # Fit polynomial to trace points
         try:
             if order > 4:
@@ -514,30 +526,32 @@ def detect_traces(
                 # Use quadratic fit
                 poly_order = min(2, len(x_valid) - 1)
                 coeffs = np.polyfit(x_valid, y_valid, poly_order)
-            
+
             # Evaluate polynomial across full x range
             y_fit = np.polyval(coeffs, x_fit)
             tracea[:, idx] = y_fit
-            
+
         except (np.RankWarning, ValueError):
             # If fitting fails, use linear interpolation
             tracea[:, idx] = np.interp(x_fit, x_valid, y_valid)
-    
+
     # Update ntraces to actual number of valid traces
     ntraces = np.sum([np.any(tracea[:, i] != 0) for i in range(max_ntraces)])
-    
+
     logger.info(f"Final number of traces: {ntraces}")
-    
+
     return ntraces, tracea, rep_slice, rep_pkpos
 
 
-def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, max_displacement: float) -> Tuple[int, np.ndarray]:
+def _link_peaks_to_traces(
+    pk_grid: np.ndarray, nsteps: int, max_ntraces: int, max_displacement: float
+) -> Tuple[int, np.ndarray]:
     """
     Link peak locations into fiber traces using clustering approach.
-    
+
     This function implements a simplified version of the Fortran PK_GRID2TRACES
     algorithm, using hierarchical clustering instead of Multi-Target Tracking.
-    
+
     Parameters
     ----------
     pk_grid : np.ndarray
@@ -548,7 +562,7 @@ def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, ma
         Maximum number of traces
     max_displacement : float
         Maximum displacement between consecutive peaks
-    
+
     Returns
     -------
     tuple
@@ -558,59 +572,61 @@ def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, ma
         trace_pts : np.ndarray
             Trace points array of shape (max_ntraces, nsteps)
     """
-    
+
     # Collect all valid peaks with their positions
     peak_positions = []
     peak_steps = []
-    
+
     for stepno in range(nsteps):
         peaks_in_step = pk_grid[stepno, :]
         valid_peaks = peaks_in_step[peaks_in_step > 0]
-        
+
         for peak in valid_peaks:
             peak_positions.append(peak)
             peak_steps.append(stepno)
-    
+
     if len(peak_positions) == 0:
         return 0, np.zeros((max_ntraces, nsteps))
-    
+
     # Convert to numpy arrays
     peak_positions = np.array(peak_positions)
     peak_steps = np.array(peak_steps)
-    
+
     # Create feature matrix for clustering
     # Features: [position, step_number] - similar to Fortran's temporal sequence
     features = np.column_stack([peak_positions, peak_steps])
-    
+
     # Calculate distance matrix
-    distances = pdist(features, metric='euclidean')
-    
+    distances = pdist(features, metric="euclidean")
+
     # Perform hierarchical clustering (single linkage for continuity)
-    linkage_matrix = linkage(distances, method='single')
-    
+    linkage_matrix = linkage(distances, method="single")
+
     # Determine number of clusters (traces) using distance threshold
-    cluster_labels = fcluster(linkage_matrix, max_displacement, criterion='distance')
+    cluster_labels = fcluster(linkage_matrix, max_displacement, criterion="distance")
     unique_clusters = np.unique(cluster_labels)
     n_clusters = len(unique_clusters)
     n_clusters = min(n_clusters, max_ntraces)
-    
+
     # Create trace points array
     trace_pts = np.zeros((max_ntraces, nsteps))
-    
+
     # Step 1: Assign peaks to traces (similar to Fortran's MTT output)
-    for i, (pos, step, label) in enumerate(zip(peak_positions, peak_steps, cluster_labels)):
+    for i, (pos, step, label) in enumerate(
+        zip(peak_positions, peak_steps, cluster_labels)
+    ):
         if label <= max_ntraces:
             trace_pts[label - 1, step] = pos
-    
+
     # Step 2: Filter traces with significant number of points (like Fortran's 50% threshold)
     significant_traces = []
     for trace_idx in range(n_clusters):
         n_points = np.sum(trace_pts[trace_idx, :] > 0)
         if n_points > 0.5 * nsteps:  # Same threshold as Fortran
             significant_traces.append(trace_idx)
-    
+
     ntraces = len(significant_traces)
-    
+
     # Step 3: Sort traces by median position (like Fortran's sorting)
     if ntraces > 0:
         trace_medians = []
@@ -622,18 +638,18 @@ def _link_peaks_to_traces(pk_grid: np.ndarray, nsteps: int, max_ntraces: int, ma
             else:
                 median_pos = 0.0
             trace_medians.append(median_pos)
-        
+
         # Sort by median position (ascending order)
         sorted_indices = np.argsort(trace_medians)
         significant_traces = [significant_traces[i] for i in sorted_indices]
-        
+
         # Create final trace array with sorted traces
         final_trace_pts = np.zeros((max_ntraces, nsteps))
         for i, trace_idx in enumerate(significant_traces):
             final_trace_pts[i, :] = trace_pts[trace_idx, :]
-        
+
         return ntraces, final_trace_pts
-    
+
     return 0, np.zeros((max_ntraces, nsteps))
 
 
@@ -988,48 +1004,48 @@ def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:
 def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
     """
     Perform wavelet convolution on a signal.
-    
+
     This function implements a simplified version of the Fortran WAVELET_CONVOLUTION
     using a Mexican hat wavelet.
-    
+
     Parameters
     ----------
     signal : np.ndarray
         Input signal
     scale : float
         Wavelet scale parameter
-    
+
     Returns
     -------
     np.ndarray
         Convolved signal
     """
     from scipy import signal as scipy_signal
-    
+
     # Create Mexican hat wavelet (second derivative of Gaussian)
     # This is a simplified version of the Fortran implementation
-    t = np.linspace(-4*scale, 4*scale, int(8*scale))
+    t = np.linspace(-4 * scale, 4 * scale, int(8 * scale))
     wavelet = scipy_signal.morlet2(len(t), scale, w=2.0)
-    
+
     # Perform convolution
-    convolved = scipy_signal.convolve(signal, wavelet, mode='same')
-    
+    convolved = scipy_signal.convolve(signal, wavelet, mode="same")
+
     return convolved
 
 
 def _find_resonant_peaks_ztol(signal: np.ndarray, ztol: float) -> np.ndarray:
     """
     Find resonant peaks in signal above zero tolerance.
-    
+
     This function implements the Fortran WAVELET_FIND_RES_PEAKS_ZTOL algorithm.
-    
+
     Parameters
     ----------
     signal : np.ndarray
         Input signal
     ztol : float
         Zero tolerance threshold
-    
+
     Returns
     -------
     np.ndarray
@@ -1037,55 +1053,57 @@ def _find_resonant_peaks_ztol(signal: np.ndarray, ztol: float) -> np.ndarray:
     """
     peaks = []
     n = len(signal)
-    
+
     # Find regions above zero tolerance and their maxima
     in_positive_range = False
     beg_idx = 0
-    
-    for i in range(1, n-1):
+
+    for i in range(1, n - 1):
         if not in_positive_range:
             # Check if we are still in sub-zero range
             if signal[i] < ztol:
                 continue
-            
+
             # We are not in a sub-zero range, mark beginning
             in_positive_range = True
             beg_idx = i
-            
+
         else:
             # Check if we are still in positive range
             if signal[i] >= ztol:
                 continue
-            
+
             # We have reached an end to positive range, find maximum
             in_positive_range = False
             end_idx = i - 1
-            
+
             # Find maximum between beg_idx and end_idx
             max_idx = beg_idx
             for j in range(beg_idx, end_idx + 1):
                 if signal[j] > signal[max_idx]:
                     max_idx = j
-            
+
             # Add this peak to the list
             peaks.append(max_idx)
-    
+
     return np.array(peaks, dtype=int)
 
 
-def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _find_zero_crossings(
+    signal: np.ndarray, peaks: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Find left and right zero crossings for each peak.
-    
+
     This function implements the Fortran WAVELET_FIND_ZERO_CROSSINGS2 algorithm.
-    
+
     Parameters
     ----------
     signal : np.ndarray
         Input signal
     peaks : np.ndarray
         Peak indices
-    
+
     Returns
     -------
     tuple
@@ -1093,11 +1111,11 @@ def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndar
     """
     lhs_zc = []
     rhs_zc = []
-    
+
     for peak_idx in peaks:
         if signal[peak_idx] <= 0.0:
             continue
-        
+
         # Find left zero crossing
         zero_lhs = -1.0
         for j in range(peak_idx, -1, -1):
@@ -1107,7 +1125,7 @@ def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndar
                 if j1 < len(signal):
                     zero_lhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
                 break
-        
+
         # Find right zero crossing
         zero_rhs = -1.0
         for j in range(peak_idx, len(signal)):
@@ -1117,22 +1135,24 @@ def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndar
                 if j0 >= 0:
                     zero_rhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
                 break
-        
+
         # Only add if both zero crossings were found
         if zero_lhs >= 0 and zero_rhs >= 0:
             lhs_zc.append(zero_lhs)
             rhs_zc.append(zero_rhs)
-    
+
     return np.array(lhs_zc), np.array(rhs_zc)
 
 
-def _wavelet_peak_detection_scipy(col_data: np.ndarray, widths: list = None, max_peaks: int = None) -> np.ndarray:
+def _wavelet_peak_detection_scipy(
+    col_data: np.ndarray, widths: list = None, max_peaks: int = None
+) -> np.ndarray:
     """
     Detect peaks using scipy's find_peaks_cwt method.
-    
+
     This is an alternative to the Fortran-based implementation,
     using scipy's optimized wavelet peak detection.
-    
+
     Parameters
     ----------
     col_data : np.ndarray
@@ -1141,39 +1161,41 @@ def _wavelet_peak_detection_scipy(col_data: np.ndarray, widths: list = None, max
         List of widths for wavelet analysis (default: [2, 4, 8])
     max_peaks : int, optional
         Maximum number of peaks to return (default: None, return all)
-    
+
     Returns
     -------
     np.ndarray
         Peak positions
     """
     from scipy.signal import find_peaks_cwt
-    
+
     if widths is None:
         widths = [2, 4, 8]
-    
+
     # Use scipy's find_peaks_cwt
-    peaks = find_peaks_cwt(col_data, widths, wavelet='ricker')
-    
+    peaks = find_peaks_cwt(col_data, widths, wavelet="ricker")
+
     # If we have more peaks than max_peaks, select the highest ones
     if max_peaks is not None and len(peaks) > max_peaks:
         # Get peak heights at the peak positions
         peak_heights = col_data[peaks.astype(int)]
-        
+
         # Sort by peak height (descending) and take top max_peaks
         sorted_indices = np.argsort(peak_heights)[::-1]
         peaks = peaks[sorted_indices[:max_peaks]]
-    
+
     return peaks.astype(float)
 
 
-def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0, max_peaks: int = None) -> np.ndarray:
+def _wavelet_peak_detection(
+    col_data: np.ndarray, scale: float = 2.0, max_peaks: int = None
+) -> np.ndarray:
     """
     Detect peaks using wavelet convolution method.
-    
+
     This function implements the complete wavelet-based peak detection
     algorithm from the Fortran code.
-    
+
     Parameters
     ----------
     col_data : np.ndarray
@@ -1182,7 +1204,7 @@ def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0, max_peaks:
         Wavelet scale parameter
     max_peaks : int, optional
         Maximum number of peaks to return (default: None, return all)
-    
+
     Returns
     -------
     np.ndarray
@@ -1190,27 +1212,27 @@ def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0, max_peaks:
     """
     # Step 1: Perform wavelet convolution
     cwt = _wavelet_convolution(col_data, scale)
-    
+
     # Step 2: Find resonant peaks above zero tolerance
     ztol = 0.1 * np.max(cwt)  # 10% of maximum positive value
     resonant_peaks = _find_resonant_peaks_ztol(cwt, ztol)
-    
+
     # Step 3: Find zero crossings for each peak
     lhs_zc, rhs_zc = _find_zero_crossings(cwt, resonant_peaks)
-    
+
     # Step 4: Calculate peak positions as midpoints of zero crossings
     if len(lhs_zc) > 0 and len(rhs_zc) > 0:
         peak_positions = 0.5 * (lhs_zc + rhs_zc)
-        
+
         # If we have more peaks than max_peaks, select the highest ones
         if max_peaks is not None and len(peak_positions) > max_peaks:
             # Get peak heights at the peak positions
             peak_heights = col_data[peak_positions.astype(int)]
-            
+
             # Sort by peak height (descending) and take top max_peaks
             sorted_indices = np.argsort(peak_heights)[::-1]
             peak_positions = peak_positions[sorted_indices[:max_peaks]]
-        
+
         return peak_positions.astype(float)
     else:
         return np.array([], dtype=float)
