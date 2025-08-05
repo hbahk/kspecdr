@@ -14,7 +14,8 @@ license = { file = "LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
     "numpy",
-    "astropy"
+    "astropy",
+    "PyWavelets"
 ]
 
 [project.optional-dependencies]

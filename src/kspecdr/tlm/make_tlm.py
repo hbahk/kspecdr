@@ -1004,7 +1004,7 @@ def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:
 def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
     """
     Perform wavelet convolution on a signal.
-
+    
     This function implements a simplified version of the Fortran WAVELET_CONVOLUTION
     using a Mexican hat wavelet.
 
@@ -1014,23 +1014,41 @@ def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
         Input signal
     scale : float
         Wavelet scale parameter
-
+    
     Returns
     -------
     np.ndarray
         Convolved signal
     """
-    from scipy import signal as scipy_signal
-
-    # Create Mexican hat wavelet (second derivative of Gaussian)
-    # This is a simplified version of the Fortran implementation
-    t = np.linspace(-4 * scale, 4 * scale, int(8 * scale))
-    wavelet = scipy_signal.morlet2(len(t), scale, w=2.0)
-
-    # Perform convolution
-    convolved = scipy_signal.convolve(signal, wavelet, mode="same")
-
-    return convolved
+    try:
+        import pywt
+        
+        # Use Mexican hat wavelet (Ricker wavelet in pywt)
+        # This is equivalent to the Fortran implementation
+        wavelet = 'mexh'  # Mexican hat wavelet
+        
+        # Perform continuous wavelet transform
+        # scales parameter determines the scale of the wavelet
+        scales = np.array([scale])
+        coef, freqs = pywt.cwt(signal, scales, wavelet)
+        
+        # Return the real part of the wavelet coefficients
+        return np.real(coef[0, :])
+        
+    except ImportError:
+        # Fallback to simple convolution if pywt is not available
+        logger.warning("PyWavelets not available, using simple convolution")
+        from scipy import signal as scipy_signal
+        
+        # Create a simple Gaussian kernel as fallback
+        kernel_size = int(4 * scale)
+        t = np.linspace(-kernel_size, kernel_size, 2 * kernel_size + 1)
+        kernel = np.exp(-0.5 * (t / scale) ** 2)
+        kernel = kernel / np.sum(kernel)  # Normalize
+        
+        # Perform convolution
+        convolved = scipy_signal.convolve(signal, kernel, mode="same")
+        return convolved
 
 
 def _find_resonant_peaks_ztol(signal: np.ndarray, ztol: float) -> np.ndarray:
@@ -1173,7 +1191,7 @@ def _wavelet_peak_detection_scipy(
         widths = [2, 4, 8]
 
     # Use scipy's find_peaks_cwt
-    peaks = find_peaks_cwt(col_data, widths, wavelet="ricker")
+    peaks = find_peaks_cwt(col_data, widths) # default: ricker wavelet
 
     # If we have more peaks than max_peaks, select the highest ones
     if max_peaks is not None and len(peaks) > max_peaks:

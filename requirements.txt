@@ -5,6 +5,9 @@ astropy>=5.0.0
 # Cosmic ray removal
 astroscrappy>=1.0.0
 
+# Wavelet processing
+PyWavelets
+
 # Optional dependencies for advanced features
 # scipy>=1.7.0  # For advanced image processing
 # matplotlib>=3.5.0  # For plotting and visualization
