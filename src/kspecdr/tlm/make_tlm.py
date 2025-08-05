@@ -420,8 +420,11 @@ def detect_traces(
             if max_val > 0:
                 height_threshold = 0.1 * max_val
                 peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
-                # select the highest peaks until the max_ntraces is reached
-                peaks = peaks[np.argsort(properties["peak_heights"])[::-1][:max_ntraces]]
+                # Select the highest peaks until the max_ntraces is reached
+                if len(peaks) > max_ntraces:
+                    peak_heights = properties["peak_heights"]
+                    sorted_indices = np.argsort(peak_heights)[::-1]
+                    peaks = peaks[sorted_indices[:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
             
@@ -434,15 +437,19 @@ def detect_traces(
                 max_height = np.max(col_data[peaks])
                 mask = col_data[peaks] >= 0.1 * max_height
                 peaks = peaks[mask]
+                
+                # Select the highest peaks until the max_ntraces is reached
+                if len(peaks) > max_ntraces:
+                    peak_heights = col_data[peaks]
+                    sorted_indices = np.argsort(peak_heights)[::-1]
+                    peaks = peaks[sorted_indices[:max_ntraces]]
             
         elif pk_search_mthd == 2:
             # Wavelet convolution method
-            peaks = _wavelet_peak_detection(col_data, scale=2.0)
+            peaks = _wavelet_peak_detection(col_data, scale=2.0, max_peaks=max_ntraces)
             # Convert peak positions to indices
             if len(peaks) > 0:
                 peaks = peaks.astype(int)
-                # Limit to max_ntraces
-                peaks = peaks[:max_ntraces] # TODO: check if this is correct
             else:
                 peaks = np.array([], dtype=int)
         
@@ -452,8 +459,11 @@ def detect_traces(
             if max_val > 0:
                 height_threshold = 0.1 * max_val
                 peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
-                # select the highest peaks until the max_ntraces is reached
-                peaks = peaks[np.argsort(properties["peak_heights"])[::-1][:max_ntraces]]
+                # Select the highest peaks until the max_ntraces is reached
+                if len(peaks) > max_ntraces:
+                    peak_heights = properties["peak_heights"]
+                    sorted_indices = np.argsort(peak_heights)[::-1]
+                    peaks = peaks[sorted_indices[:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
         
@@ -1116,7 +1126,48 @@ def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndar
     return np.array(lhs_zc), np.array(rhs_zc)
 
 
-def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0) -> np.ndarray:
+def _wavelet_peak_detection_scipy(col_data: np.ndarray, widths: list = None, max_peaks: int = None) -> np.ndarray:
+    """
+    Detect peaks using scipy's find_peaks_cwt method.
+    
+    This is an alternative to the Fortran-based implementation,
+    using scipy's optimized wavelet peak detection.
+    
+    Parameters
+    ----------
+    col_data : np.ndarray
+        Column data to analyze
+    widths : list, optional
+        List of widths for wavelet analysis (default: [2, 4, 8])
+    max_peaks : int, optional
+        Maximum number of peaks to return (default: None, return all)
+    
+    Returns
+    -------
+    np.ndarray
+        Peak positions
+    """
+    from scipy.signal import find_peaks_cwt
+    
+    if widths is None:
+        widths = [2, 4, 8]
+    
+    # Use scipy's find_peaks_cwt
+    peaks = find_peaks_cwt(col_data, widths, wavelet='ricker')
+    
+    # If we have more peaks than max_peaks, select the highest ones
+    if max_peaks is not None and len(peaks) > max_peaks:
+        # Get peak heights at the peak positions
+        peak_heights = col_data[peaks.astype(int)]
+        
+        # Sort by peak height (descending) and take top max_peaks
+        sorted_indices = np.argsort(peak_heights)[::-1]
+        peaks = peaks[sorted_indices[:max_peaks]]
+    
+    return peaks.astype(float)
+
+
+def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0, max_peaks: int = None) -> np.ndarray:
     """
     Detect peaks using wavelet convolution method.
     
@@ -1129,6 +1180,8 @@ def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0) -> np.ndar
         Column data to analyze
     scale : float
         Wavelet scale parameter
+    max_peaks : int, optional
+        Maximum number of peaks to return (default: None, return all)
     
     Returns
     -------
@@ -1148,6 +1201,16 @@ def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0) -> np.ndar
     # Step 4: Calculate peak positions as midpoints of zero crossings
     if len(lhs_zc) > 0 and len(rhs_zc) > 0:
         peak_positions = 0.5 * (lhs_zc + rhs_zc)
+        
+        # If we have more peaks than max_peaks, select the highest ones
+        if max_peaks is not None and len(peak_positions) > max_peaks:
+            # Get peak heights at the peak positions
+            peak_heights = col_data[peak_positions.astype(int)]
+            
+            # Sort by peak height (descending) and take top max_peaks
+            sorted_indices = np.argsort(peak_heights)[::-1]
+            peak_positions = peak_positions[sorted_indices[:max_peaks]]
+        
         return peak_positions.astype(float)
     else:
         return np.array([], dtype=float)
