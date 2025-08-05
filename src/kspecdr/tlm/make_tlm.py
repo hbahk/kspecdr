@@ -420,6 +420,8 @@ def detect_traces(
             if max_val > 0:
                 height_threshold = 0.1 * max_val
                 peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+                # select the highest peaks until the max_ntraces is reached
+                peaks = peaks[np.argsort(properties["peak_heights"])[::-1][:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
             
@@ -434,13 +436,13 @@ def detect_traces(
                 peaks = peaks[mask]
             
         elif pk_search_mthd == 2:
-            # Wavelet convolution method (simplified)
-            # For now, use standard peak finding
-            # TODO: Implement wavelet convolution method
-            max_val = np.nanmax(col_data)
-            if max_val > 0:
-                height_threshold = 0.1 * max_val
-                peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+            # Wavelet convolution method
+            peaks = _wavelet_peak_detection(col_data, scale=2.0)
+            # Convert peak positions to indices
+            if len(peaks) > 0:
+                peaks = peaks.astype(int)
+                # Limit to max_ntraces
+                peaks = peaks[:max_ntraces] # TODO: check if this is correct
             else:
                 peaks = np.array([], dtype=int)
         
@@ -450,6 +452,8 @@ def detect_traces(
             if max_val > 0:
                 height_threshold = 0.1 * max_val
                 peaks, properties = find_peaks(col_data, height=height_threshold, distance=3)
+                # select the highest peaks until the max_ntraces is reached
+                peaks = peaks[np.argsort(properties["peak_heights"])[::-1][:max_ntraces]]
             else:
                 peaks = np.array([], dtype=int)
         
@@ -969,3 +973,181 @@ def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:
     # Write changes
     hdul.flush()
     hdul.close()
+
+
+def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Perform wavelet convolution on a signal.
+    
+    This function implements a simplified version of the Fortran WAVELET_CONVOLUTION
+    using a Mexican hat wavelet.
+    
+    Parameters
+    ----------
+    signal : np.ndarray
+        Input signal
+    scale : float
+        Wavelet scale parameter
+    
+    Returns
+    -------
+    np.ndarray
+        Convolved signal
+    """
+    from scipy import signal as scipy_signal
+    
+    # Create Mexican hat wavelet (second derivative of Gaussian)
+    # This is a simplified version of the Fortran implementation
+    t = np.linspace(-4*scale, 4*scale, int(8*scale))
+    wavelet = scipy_signal.morlet2(len(t), scale, w=2.0)
+    
+    # Perform convolution
+    convolved = scipy_signal.convolve(signal, wavelet, mode='same')
+    
+    return convolved
+
+
+def _find_resonant_peaks_ztol(signal: np.ndarray, ztol: float) -> np.ndarray:
+    """
+    Find resonant peaks in signal above zero tolerance.
+    
+    This function implements the Fortran WAVELET_FIND_RES_PEAKS_ZTOL algorithm.
+    
+    Parameters
+    ----------
+    signal : np.ndarray
+        Input signal
+    ztol : float
+        Zero tolerance threshold
+    
+    Returns
+    -------
+    np.ndarray
+        Indices of resonant peaks
+    """
+    peaks = []
+    n = len(signal)
+    
+    # Find regions above zero tolerance and their maxima
+    in_positive_range = False
+    beg_idx = 0
+    
+    for i in range(1, n-1):
+        if not in_positive_range:
+            # Check if we are still in sub-zero range
+            if signal[i] < ztol:
+                continue
+            
+            # We are not in a sub-zero range, mark beginning
+            in_positive_range = True
+            beg_idx = i
+            
+        else:
+            # Check if we are still in positive range
+            if signal[i] >= ztol:
+                continue
+            
+            # We have reached an end to positive range, find maximum
+            in_positive_range = False
+            end_idx = i - 1
+            
+            # Find maximum between beg_idx and end_idx
+            max_idx = beg_idx
+            for j in range(beg_idx, end_idx + 1):
+                if signal[j] > signal[max_idx]:
+                    max_idx = j
+            
+            # Add this peak to the list
+            peaks.append(max_idx)
+    
+    return np.array(peaks, dtype=int)
+
+
+def _find_zero_crossings(signal: np.ndarray, peaks: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Find left and right zero crossings for each peak.
+    
+    This function implements the Fortran WAVELET_FIND_ZERO_CROSSINGS2 algorithm.
+    
+    Parameters
+    ----------
+    signal : np.ndarray
+        Input signal
+    peaks : np.ndarray
+        Peak indices
+    
+    Returns
+    -------
+    tuple
+        (lhs_zc, rhs_zc) - left and right zero crossing positions
+    """
+    lhs_zc = []
+    rhs_zc = []
+    
+    for peak_idx in peaks:
+        if signal[peak_idx] <= 0.0:
+            continue
+        
+        # Find left zero crossing
+        zero_lhs = -1.0
+        for j in range(peak_idx, -1, -1):
+            if signal[j] < 0.0:
+                # Linear interpolation to find zero crossing
+                j0, j1 = j, j + 1
+                if j1 < len(signal):
+                    zero_lhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
+                break
+        
+        # Find right zero crossing
+        zero_rhs = -1.0
+        for j in range(peak_idx, len(signal)):
+            if signal[j] < 0.0:
+                # Linear interpolation to find zero crossing
+                j0, j1 = j - 1, j
+                if j0 >= 0:
+                    zero_rhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
+                break
+        
+        # Only add if both zero crossings were found
+        if zero_lhs >= 0 and zero_rhs >= 0:
+            lhs_zc.append(zero_lhs)
+            rhs_zc.append(zero_rhs)
+    
+    return np.array(lhs_zc), np.array(rhs_zc)
+
+
+def _wavelet_peak_detection(col_data: np.ndarray, scale: float = 2.0) -> np.ndarray:
+    """
+    Detect peaks using wavelet convolution method.
+    
+    This function implements the complete wavelet-based peak detection
+    algorithm from the Fortran code.
+    
+    Parameters
+    ----------
+    col_data : np.ndarray
+        Column data to analyze
+    scale : float
+        Wavelet scale parameter
+    
+    Returns
+    -------
+    np.ndarray
+        Peak positions
+    """
+    # Step 1: Perform wavelet convolution
+    cwt = _wavelet_convolution(col_data, scale)
+    
+    # Step 2: Find resonant peaks above zero tolerance
+    ztol = 0.1 * np.max(cwt)  # 10% of maximum positive value
+    resonant_peaks = _find_resonant_peaks_ztol(cwt, ztol)
+    
+    # Step 3: Find zero crossings for each peak
+    lhs_zc, rhs_zc = _find_zero_crossings(cwt, resonant_peaks)
+    
+    # Step 4: Calculate peak positions as midpoints of zero crossings
+    if len(lhs_zc) > 0 and len(rhs_zc) > 0:
+        peak_positions = 0.5 * (lhs_zc + rhs_zc)
+        return peak_positions.astype(float)
+    else:
+        return np.array([], dtype=float)
