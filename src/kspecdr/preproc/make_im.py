@@ -398,7 +398,7 @@ class MakeIM:
         variance_data = self._calculate_variance(image_data, noise, gain)
         
         # Write variance data
-        im_file.write_variance_data(variance_data)
+        im_file.write_variance_data(variance_data.T)
         
         logger.info("Variance HDU created and initialized")
     
@@ -785,27 +785,28 @@ class MakeIM:
                     logger.info(f"Cannot find file {sub_filename}. Not pre-subtracting.")
             
             # Instrument-specific image transformations
-            if is_6df:
-                logger.info("Processing 6DF raw data: transposing and reversing axes")
-                # Transpose and reverse spectral axis
-                image_data = np.flipud(image_data.T)
-                nx, ny = ny, nx  # Update dimensions
+            # TODO: fix these
+            # if is_6df:
+            #     logger.info("Processing 6DF raw data: transposing and reversing axes")
+            #     # Transpose and reverse spectral axis
+            #     image_data = np.flipud(image_data.T)
+            #     nx, ny = ny, nx  # Update dimensions
                 
-            elif is_koala:
-                logger.info("Processing KOALA raw data: flipping spatial axis")
-                # Flip spatial axis (fiber number indexing from top to bottom)
-                image_data = np.fliplr(image_data)
+            # elif is_koala:
+            #     logger.info("Processing KOALA raw data: flipping spatial axis")
+            #     # Flip spatial axis (fiber number indexing from top to bottom)
+            #     image_data = np.fliplr(image_data)
                 
-            elif is_taipan:
-                logger.info("Processing TAIPAN raw data: transposing axes")
-                # Transpose axes
-                if taipan_is_blue:
-                    image_data = image_data.T
-                elif taipan_is_red:
-                    image_data = np.flipud(image_data.T)
-                else:
-                    image_data = image_data.T
-                nx, ny = ny, nx  # Update dimensions
+            # elif is_taipan:
+            #     logger.info("Processing TAIPAN raw data: transposing axes")
+            #     # Transpose axes
+            #     if taipan_is_blue:
+            #         image_data = image_data.T
+            #     elif taipan_is_red:
+            #         image_data = np.flipud(image_data.T)
+            #     else:
+            #         image_data = image_data.T
+            #     nx, ny = ny, nx  # Update dimensions
         
         # Create IM file with proper structure
         self._create_im_file_structure(im_filename, image_data, nx, ny, 

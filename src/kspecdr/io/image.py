@@ -140,8 +140,8 @@ class ImageFile:
         if data is None:
             raise ValueError("No image data found in primary HDU")
             
-        # Transpose to match Fortran convention (spectral, spatial)
-        data = data.T
+        # # Transpose to match Fortran convention (spectral, spatial)
+        # data = data.T
         
         # Check dimensions
         if data.shape != (nx, ny):
@@ -241,8 +241,8 @@ class ImageFile:
         if data is None:
             return np.ones((nx, ny), dtype=np.float32)
             
-        # Transpose to match Fortran convention
-        data = data.T
+        # # Transpose to match Fortran convention
+        # data = data.T
         
         if data.shape != (nx, ny):
             logger.warning(f"Expected variance shape ({nx}, {ny}), got {data.shape}")
