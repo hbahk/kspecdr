@@ -139,7 +139,7 @@ class MakeIM:
             # Step 3: Process overscan and subtract bias
             if self.verbose:
                 logger.info("Processing overscan and bias subtraction...")
-            self._debiase_image(im_file, use_bias, bias_filename, **kwargs)
+            self._debias_image(im_file, use_bias, bias_filename, **kwargs)
             
             # Step 4: Subtract dark frame
             if use_dark and dark_filename:
@@ -260,7 +260,7 @@ class MakeIM:
             
             return mask_data.T  # Transpose to match our (x, y) convention
     
-    def _debiase_image(self, im_file: ImageFile, use_bias: bool, bias_filename: Optional[str] = None, **kwargs) -> None:
+    def _debias_image(self, im_file: ImageFile, use_bias: bool, bias_filename: Optional[str] = None, **kwargs) -> None:
         """
         Process overscan region and subtract bias.
         
@@ -279,37 +279,45 @@ class MakeIM:
         nx, ny = im_file.get_size()
         image_data = im_file.read_image_data(nx, ny)
         
-        # Subtract bias frame if provided
-        if bias_filename is not None:
-            # Read bias frame
-            with ImageFile(bias_filename, mode='READ') as bias_file:
-                bias_data = bias_file.read_image_data(nx, ny)
-                # Get bias subtraction method from header or use defaults
-                bias_method = bias_file.get_header_value('BIASTYPE', 'MEDIAN')
-                if bias_method == 'MEDIAN':
-                    bias_level = np.nanmedian(bias_data)
-                elif bias_method == 'MASTER':
-                    bias_level = bias_data
-                else:
-                    raise ValueError(f"Unknown bias subtraction method: {bias_method}")
-                logger.info(f"Bias subtraction method: {bias_method}")
-                image_data -= bias_level
-                logger.info(f"Subtracted bias level: {np.nanmedian(bias_level):.2f}")
-        else:
-            # Get overscan region from header or use defaults
-            overscan_region = kwargs.get('overscan_region', None)
-            
-            if overscan_region is not None:
-                # Process overscan region
-                bias_level = self._calculate_bias_level(image_data, overscan_region)
-                image_data -= bias_level
-                logger.info("Bias subtraction method: OVERSCAN")
-                logger.info(f"Subtracted bias level: {bias_level:.2f}")
+        if use_bias:
+            # Subtract bias frame if provided
+            if bias_filename is not None:
+                # Read bias frame
+                with ImageFile(bias_filename, mode='READ') as bias_file:
+                    bias_data = bias_file.read_image_data(nx, ny)
+                    # Get bias subtraction method from header or use defaults
+                    bias_method = bias_file.get_header_value('BIASTYPE', 'MEDIAN')
+                    if bias_method == 'MEDIAN':
+                        bias_level = np.nanmedian(bias_data)
+                    elif bias_method == 'MASTER':
+                        bias_level = bias_data
+                    else:
+                        raise ValueError(f"Unknown bias subtraction method: {bias_method}")
+                    logger.info(f"Bias subtraction method: {bias_method}")
+                    image_data -= bias_level
+                    bias_record = np.nanmedian(bias_level)
+                    logger.info(f"Subtracted bias level: {bias_record:.2f}")
             else:
-                logger.warning("No overscan region found in header")
-            
-        # Write back the processed image data
-        im_file.write_image_data(image_data)
+                # Get overscan region from header or use defaults
+                overscan_region = kwargs.get('overscan_region', None)
+                
+                if overscan_region is not None:
+                    # Process overscan region
+                    bias_level = self._calculate_bias_level(image_data, overscan_region)
+                    image_data -= bias_level
+                    bias_record = bias_level
+                    logger.info("Bias subtraction method: OVERSCAN")
+                    logger.info(f"Subtracted bias level: {bias_record:.2f}")
+                else:
+                    logger.warning("No overscan region found in header")
+                
+            # Write back the processed image data
+            im_file.write_image_data(image_data)
+            im_file.add_history(f"Subtracted bias level: {bias_record:.2f}")
+        else:
+            logger.info("No bias subtraction performed")
+            bias_record = 0.0
+            im_file.add_history("No bias subtraction performed")
     
     def _calculate_bias_level(self, image_data: np.ndarray, 
                              overscan_region: Tuple[int, int, int, int]) -> float:
