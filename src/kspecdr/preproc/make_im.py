@@ -305,8 +305,8 @@ class MakeIM:
                 image_data -= bias_level
                 logger.info("Bias subtraction method: OVERSCAN")
                 logger.info(f"Subtracted bias level: {bias_level:.2f}")
-                # TODO: add cutting of overscan region
-                logger.warning("Cutting overscan region is not implemented yet")
+            else:
+                logger.warning("No overscan region found in header")
             
         # Write back the processed image data
         im_file.write_image_data(image_data)
