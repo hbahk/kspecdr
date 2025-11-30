@@ -3,6 +3,8 @@ Tramline map generation using astropy-based I/O.
 
 This module provides functions for generating tramline maps from FITS images,
 replacing the Fortran TDFIO functions with astropy-based equivalents.
+
+TODO: check the usage of the arguments in the function calls.
 """
 
 import numpy as np
