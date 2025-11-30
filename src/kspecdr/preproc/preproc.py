@@ -230,6 +230,9 @@ def reduce_bias(
         sigma=5.0,
         adjust_levels=False
     )
+    
+    with ImageFile(combined_file, mode='UPDATE') as im:
+        im.set_class('BIAS')
         
     return combined_file
 
@@ -238,7 +241,7 @@ def reduce_dark(
     output_file: str = "DARKcombined.fits",
     bias_file: Optional[str] = None,
     **kwargs
-) -> str:
+) -> Union[str, List[str]]:
     """
     Reduce dark frames: Make IM files (subtract bias) and combine them.
     
@@ -253,8 +256,9 @@ def reduce_dark(
         
     Returns
     -------
-    str
-        Path to the master dark file
+    str or List[str]
+        Path to the master dark file(s). If multiple exposure times are present,
+        returns a list of filenames.
     """
     logger.info(f"Reducing {len(raw_files)} dark frames")
     
@@ -270,20 +274,62 @@ def reduce_dark(
         )
         im_files.append(im_file)
         
-    # Combine dark frames
-    # Dark frames might need scaling if exposure times differ, but usually they are same
-    # adjust_levels=False is safer for darks unless we normalize by exposure time
-    combined_file = combine_image(
-        im_files, 
-        output_file, 
-        method='MEDIAN', 
-        adjust_levels=False
-    )
+    # Group files by exposure time (as per 2dfdr standard)
+    files_by_et = {}
+    for im_f in im_files:
+        with ImageFile(im_f, mode='READ') as img:
+            # Get exposure time, defaulting to 0 if not present
+            exptime = float(img.get_header_value('EXPOSED', 0.0))
+            # Use int for grouping if close to integer, to avoid float precision issues
+            et_int = int(round(exptime))
+            
+            if et_int not in files_by_et:
+                files_by_et[et_int] = []
+            files_by_et[et_int].append(im_f)
+            
+    created_files = []
     
-    with ImageFile(combined_file, mode='UPDATE') as im:
-        im.set_class('DARKRED')
+    # Combine each group
+    if len(files_by_et) == 1:
+        # Single group case - use original output filename
+        combined_file = combine_image(
+            im_files, 
+            output_file, 
+            method='MEDIAN', 
+            adjust_levels=False
+        )
+        with ImageFile(combined_file, mode='UPDATE') as im:
+            im.set_class('DARK')
+        return combined_file
         
-    return combined_file
+    else:
+        logger.info(f"Found {len(files_by_et)} different exposure times. Splitting combination.")
+        base_path = Path(output_file)
+        stem = base_path.stem
+        suffix = base_path.suffix
+        parent = base_path.parent
+        
+        for et, group_files in files_by_et.items():
+            # Construct new filename: stem_ETs.fits
+            # e.g. DARKcombined_1200s.fits
+            new_filename = parent / f"{stem}_{et}s{suffix}"
+            new_filename_str = str(new_filename)
+            
+            logger.info(f"Combining {len(group_files)} frames with exposure {et}s into {new_filename_str}")
+            
+            combined_file = combine_image(
+                group_files,
+                new_filename_str,
+                method='MEDIAN',
+                adjust_levels=False
+            )
+            
+            with ImageFile(combined_file, mode='UPDATE') as im:
+                im.set_class('DARK')
+            
+            created_files.append(combined_file)
+            
+        return created_files
 
 def reduce_lflat(
     raw_files: List[str],
