@@ -191,10 +191,6 @@ def reduce_bias(
         method='MEDIAN', 
         adjust_levels=False
     )
-    
-    # Update class to BIASRED (Bias Reduced) or simply stick with BIAS
-    with ImageFile(combined_file, mode='UPDATE') as im:
-        im.set_class('BIASRED')
         
     return combined_file
 
