@@ -16,6 +16,8 @@ import numpy as np
 from pathlib import Path
 from typing import List, Optional, Union, Tuple
 from astropy.io import fits
+from astropy.stats import sigma_clip
+from scipy.ndimage import median_filter
 
 from ..io.image import ImageFile
 from .make_im import make_im
@@ -27,6 +29,7 @@ def combine_image(
     output_file: str,
     method: str = 'MEDIAN',
     adjust_levels: bool = True,
+    sigma: float = 5.0,
     **kwargs
 ) -> str:
     """
@@ -39,9 +42,11 @@ def combine_image(
     output_file : str
         Output combined filename
     method : str
-        Combination method ('MEDIAN' or 'MEAN'). Default is 'MEDIAN'.
+        Combination method ('MEDIAN', 'MEAN', 'SIGMA_CLIP'). Default is 'MEDIAN'.
     adjust_levels : bool
         Whether to adjust levels (normalize) before combining. Default is True.
+    sigma : float
+        Sigma value for sigma clipping (used only if method='SIGMA_CLIP'). Default is 5.0.
     **kwargs
         Additional arguments
         
@@ -118,6 +123,39 @@ def combine_image(
         combined_data = np.nanmean(stack_data, axis=0)
         combined_var = np.nansum(stack_var, axis=0) / (n_files**2)
         
+    elif method.upper() == 'SIGMA_CLIP':
+        # Use astropy sigma_clip
+        logger.info(f"Using sigma clipping with sigma={sigma}")
+        
+        # Mask invalid values before sigma clipping
+        masked_data = np.ma.masked_invalid(stack_data)
+        
+        # Perform sigma clipping along the file axis (axis 0)
+        # This returns a masked array
+        clipped_data = sigma_clip(masked_data, sigma=sigma, axis=0, maxiters=5)
+        
+        # Calculate mean of clipped data
+        combined_data = np.ma.mean(clipped_data, axis=0).filled(np.nan)
+        
+        # Calculate variance of clipped data (std dev / sqrt(N))
+        # Or propagate input variances...
+        # For simplicity and robustness, we propagate the input variances of the surviving pixels
+        # Var_mean = Sum(Var_i) / N_good^2
+        
+        # Create mask of kept pixels
+        mask = np.ma.getmaskarray(clipped_data)
+        valid_count = np.sum(~mask, axis=0)
+        
+        # Sum variances of valid pixels
+        # masked_invalid handles NaNs in input variance
+        masked_var = np.ma.masked_array(stack_var, mask=mask)
+        sum_var = np.ma.sum(masked_var, axis=0).filled(np.nan)
+        
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            combined_var = sum_var / (valid_count**2)
+            combined_var[valid_count == 0] = np.nan
+            
     else:
         raise ValueError(f"Unknown combination method: {method}")
         
@@ -184,11 +222,12 @@ def reduce_bias(
         im_files.append(im_file)
         
     # Combine bias frames
-    # We don't usually scale bias frames (adjust_levels=False)
+    # Use SIGMA_CLIP for bias frames as per 2dfdr standard
     combined_file = combine_image(
         im_files, 
         output_file, 
-        method='MEDIAN', 
+        method='SIGMA_CLIP',
+        sigma=5.0,
         adjust_levels=False
     )
         
