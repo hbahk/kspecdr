@@ -359,6 +359,7 @@ class MakeIM:
         x1, x2, y1, y2 = overscan_region
         overscan_data = image_data[x1:x2, y1:y2]
 
+        # TODO: add option for fitting a polynomial to the overscan region
         # Use median to avoid outliers
         bias_level = np.nanmedian(overscan_data)
         return bias_level
