@@ -18,6 +18,7 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, fcluster
 
 from kspecdr.io.image import ImageFile
+from .match_fibers import taipan_nominal_fibpos, match_fibers_taipan, match_fibers_isoplane
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -40,6 +41,7 @@ INST_AAOMEGA_KOALA = 7
 INST_AAOMEGA_IFU = 8
 INST_SPECTOR_HECTOR = 9
 INST_AAOMEGA_HECTOR = 10
+INST_ISOPLANE = 99
 
 # Maximum number of fibres
 MAX__NFIBRES = 1000
@@ -114,6 +116,10 @@ def make_tlm_other(
 
     # Step 0: Pre-amble - Read image data and get instrument information
     img_data, var_data, fibre_types = read_instrument_data(im_file, instrument_code)
+
+    # Extract SPECTID from header and add to args for matching
+    spectid = im_file.get_header_value('SPECTID', 'RED')
+    args['SPECTID'] = spectid
 
     # Step 1: Set instrument-specific parameters
     order, pk_search_method, do_distortion, sparse_fibs, experimental, qad_pksearch = (
@@ -689,10 +695,46 @@ def match_traces_to_fibres(
     match_vector = np.zeros(nf, dtype=int)
     modelled_fibre_positions = np.zeros(nf)
 
-    raise NotImplementedError(
-        "Trace to fibre matching not yet implemented. "
-        "This should implement instrument-specific matching routines from the Fortran code."
-    )
+    if instrument_code == INST_TAIPAN:
+        # Get spectid from args or header?
+        # make_tlm_other passed args. Usually SPECTID is in image header.
+        # But make_tlm_other doesn't pass header values explicitly here except instrument_code.
+        # However, match_traces_to_fibres signature has `args`.
+        # Fortran: CALL TDFIO_KYWD_READ_CHAR(IM_ID,'SPECTID',SPECTID,CMT,STATUS)
+        # We need access to the image file or pass SPECTID.
+        # Current signature: (instrument_code, traces, fibre_types, pk_posn, args)
+        # We can assume SPECTID is in args if passed, or we need to change signature/read it.
+        # `read_instrument_data` gets `im_file`. `make_tlm_other` has `im_file`.
+        # `match_traces_to_fibres` is called from `make_tlm_other`.
+        # I should assume SPECTID is passed in args or available.
+        # Let's assume it's in args['SPECTID'] which might be populated by caller?
+        # Or I should add `spectid` to the function signature.
+        # Since I can't easily change the call site in `make_tlm_other` without seeing it (it is in this file).
+        # Let's check `make_tlm_other`.
+
+        spectid = args.get('SPECTID', 'RED') # Default to RED
+
+        # Get nominal positions
+        nf_taipan = len(fibre_types)
+        ar_posn = taipan_nominal_fibpos(spectid, nf_taipan)
+
+        # Match
+        match_vector, modelled_fibre_positions = match_fibers_taipan(
+            nf_taipan, fibre_types, pk_posn, ar_posn
+        )
+
+    elif instrument_code == INST_ISOPLANE:
+        # Simple 1-to-1 matching
+        match_vector, modelled_fibre_positions = match_fibers_isoplane(
+            len(fibre_types), pk_posn
+        )
+
+    else:
+        raise NotImplementedError(
+            f"Trace matching for instrument {instrument_code} not implemented"
+        )
+
+    return match_vector, modelled_fibre_positions
 
 
 def convert_traces_to_tramline_map(
