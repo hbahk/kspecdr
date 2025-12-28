@@ -8,9 +8,44 @@ This module provides functions to convert raw headers from various instruments
 import logging
 from astropy.io import fits
 from astropy.time import Time
+import numpy as np
 import re
 
 logger = logging.getLogger(__name__)
+
+def add_fiber_table(hdul: fits.HDUList, n_fibers: int) -> None:
+    """
+    Add a dummy fiber table to the HDUList.
+
+    Parameters
+    ----------
+    hdul : fits.HDUList
+        The FITS HDUList to modify in place.
+    n_fibers : int
+        Number of fibers to include in the table.
+    """
+    logger.info(f"Adding fiber table with {n_fibers} fibers")
+
+    # Create columns
+    # Standard 2dfdr fiber table columns:
+    # TYPE (1A), NAME (80A), MAGNITUDE (E), RA (D), DEC (D), X (E), Y (E), etc.
+    # For dummy/isoplane, we primarily need TYPE='P' (Program) or 'S' (Sky)
+    # to ensure extraction works.
+
+    # Create arrays
+    # All Program fibers for now
+    types = np.array(['P'] * n_fibers)
+    names = np.array([f'Fiber {i+1}' for i in range(n_fibers)])
+
+    # Create columns
+    c1 = fits.Column(name='TYPE', format='1A', array=types)
+    c2 = fits.Column(name='NAME', format='20A', array=names)
+
+    # Create Binary Table HDU
+    fib_hdu = fits.BinTableHDU.from_columns([c1, c2], name='FIBRES')
+
+    # Append to HDUList
+    hdul.append(fib_hdu)
 
 def convert_isoplane_header(header: fits.Header) -> fits.Header:
     """
