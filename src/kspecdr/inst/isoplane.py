@@ -7,11 +7,13 @@ This module provides functions to convert raw headers from various instruments
 
 import logging
 from astropy.io import fits
+from astropy.io.fits.verify import VerifyError
 from astropy.time import Time
 import numpy as np
 import re
 
 logger = logging.getLogger(__name__)
+
 
 def add_fiber_table(hdul: fits.HDUList, n_fibers: int) -> None:
     """
@@ -34,18 +36,118 @@ def add_fiber_table(hdul: fits.HDUList, n_fibers: int) -> None:
 
     # Create arrays
     # All Program fibers for now
-    types = np.array(['P'] * n_fibers)
-    names = np.array([f'Fiber {i+1}' for i in range(n_fibers)])
+    types = np.array(["P"] * n_fibers)
+    names = np.array([f"Fiber {i+1}" for i in range(n_fibers)])
 
     # Create columns
-    c1 = fits.Column(name='TYPE', format='1A', array=types)
-    c2 = fits.Column(name='NAME', format='20A', array=names)
+    c1 = fits.Column(name="TYPE", format="1A", array=types)
+    c2 = fits.Column(name="NAME", format="20A", array=names)
 
     # Create Binary Table HDU
-    fib_hdu = fits.BinTableHDU.from_columns([c1, c2], name='FIBRES')
+    fib_hdu = fits.BinTableHDU.from_columns([c1, c2], name="FIBRES")
 
     # Append to HDUList
     hdul.append(fib_hdu)
+
+
+def sanitize_header_drop_unparsable(
+    hdr: fits.Header, max_passes: int = 50, verbose: bool = True
+) -> fits.Header:
+    """
+    Return a cleaned copy of hdr by removing any cards that raise VerifyError (or ValueError)
+    when converted to a FITS card image (str(card)). Also removes associated CONTINUE chains.
+
+    This is meant for headers that contain broken OGIP long-string CONTINUE blocks.
+
+    Parameters
+    ----------
+    hdr : fits.Header
+    max_passes : int
+        Safety limit to avoid infinite loops.
+    verbose : bool
+        Print which cards were dropped.
+
+    Returns
+    -------
+    fits.Header
+        Cleaned header.
+    """
+    new = hdr.copy()
+
+    def safe_card_repr(card):
+        # triggers the same logic as printing a header, but per-card
+        return str(card)  # may raise VerifyError
+
+    passes = 0
+    while passes < max_passes:
+        passes += 1
+        changed = False
+
+        i = 0
+        while i < len(new.cards):
+            card = new.cards[i]
+            try:
+                _ = safe_card_repr(card)
+                i += 1
+                continue
+            except (VerifyError, ValueError) as e:
+                # This card is problematic. Decide how much to delete.
+                kw = card.keyword
+                if verbose:
+                    # card may not stringify, so print minimal info
+                    print(
+                        f"[sanitize] dropping card at idx={i} keyword={kw!r} due to {type(e).__name__}: {e}"
+                    )
+
+                # If we're in a CONTINUE chain, we should remove the whole chain.
+                # Strategy:
+                #  - find the start of the chain (go backwards while previous are CONTINUE)
+                #  - if the immediate previous card is NOT CONTINUE, include that previous card too
+                #    (because it's likely the long-string starter with '&')
+                start = i
+                while (
+                    start > 0
+                    and new.cards[start].keyword == "CONTINUE"
+                    and new.cards[start - 1].keyword == "CONTINUE"
+                ):
+                    start -= 1
+
+                # If the problematic card is CONTINUE and there is a preceding non-CONTINUE card,
+                # that preceding card is very likely the parent long-string keyword.
+                if (
+                    new.cards[i].keyword == "CONTINUE"
+                    and i > 0
+                    and new.cards[i - 1].keyword != "CONTINUE"
+                ):
+                    start = i - 1
+
+                # Now delete forward: start card + subsequent CONTINUEs
+                end = start + 1
+                while end < len(new.cards) and new.cards[end].keyword == "CONTINUE":
+                    end += 1
+
+                if verbose:
+                    print(
+                        f"[sanitize] removing cards [{start}:{end}) ({end-start} cards)"
+                    )
+
+                # Delete from end to start
+                for j in range(end - 1, start - 1, -1):
+                    del new[j]
+
+                changed = True
+                # After deletion, continue at same index (start), since list shrank
+                i = start
+            except Exception as e:
+                raise e
+
+        if not changed:
+            break
+
+    if passes >= max_passes and verbose:
+        print("[sanitize] reached max_passes; header may still contain issues.")
+    return new
+
 
 def convert_isoplane_header(header: fits.Header) -> fits.Header:
     """
@@ -63,14 +165,18 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     """
     # Create a copy to avoid modifying the original
     new_header = header.copy()
+    
+    # Drop non-parsable cards
+    # TODO: add options for verbose and max_passes?
+    new_header = sanitize_header_drop_unparsable(new_header, verbose=False)
 
     # 1. Instrument Name
-    new_header['INSTRUME'] = ('ISOPLANE', 'KSPEC Backup CCD')
+    new_header["INSTRUME"] = ("ISOPLANE", "KSPEC Backup CCD")
 
     # 2. Gain and Noise (Measured values for Low Noise / Low Gain)
     # RDN = 16.03 e- rms, Gain = 4.09 e-/ADU
-    new_header['RO_GAIN'] = (4.09, 'Readout Amplifer gain (e-/ADU)')
-    new_header['RO_NOISE'] = (16.03, 'Readout noise (electrons)')
+    new_header["RO_GAIN"] = (4.09, "Readout Amplifer gain (e-/ADU)")
+    new_header["RO_NOISE"] = (16.03, "Readout noise (electrons)")
 
     # 3. Exposure Time
     # Raw header seems to have EXPOSURETIME in milliseconds in HIERARCH keywords
@@ -78,7 +184,7 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     # Note: astropy handles HIERARCH keywords, but looking up by full string is safer
     exp_ms = None
     for card in header.cards:
-        if 'SHUTTERTIMING EXPOSURETIME' in card.keyword:
+        if "SHUTTERTIMING EXPOSURETIME" in card.keyword:
             try:
                 exp_ms = float(card.value)
             except (ValueError, TypeError):
@@ -90,72 +196,72 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     else:
         # Fallback to EXPTIME if available, assuming it might be seconds or needs checking
         # The user provided example shows EXPTIME = '1000 ', which matched 1000ms
-        exposed = header.get('EXPTIME', 0.0)
+        exposed = header.get("EXPTIME", 0.0)
         # Heuristic: if > 100, assume it's ms? Or trust the HIERARCH one primarily.
         try:
-             exposed = float(exposed)
-             # If it matches the HIERARCH one (which was ms), it's probably ms.
-             # But standard FITS is seconds.
-             # Given the sample: EXPTIME='1000 ', HIERARCH...='1000' /milliseconds
-             # It is safer to divide by 1000 if it's large and matches the ms value.
-             if exposed > 100:
-                 exposed = exposed / 1000.0
+            exposed = float(exposed)
+            # If it matches the HIERARCH one (which was ms), it's probably ms.
+            # But standard FITS is seconds.
+            # Given the sample: EXPTIME='1000 ', HIERARCH...='1000' /milliseconds
+            # It is safer to divide by 1000 if it's large and matches the ms value.
+            if exposed > 100:
+                exposed = exposed / 1000.0
         except:
             exposed = 0.0
 
-    new_header['EXPOSED'] = (exposed, 'Exposure Time (seconds)')
-    new_header['TOTALEXP'] = (exposed, 'Total Exposure (seconds)')
-    new_header['ELAPSED'] = (exposed, 'Elapsed Time (seconds)')
+    new_header["EXPOSED"] = (exposed, "Exposure Time (seconds)")
+    new_header["TOTALEXP"] = (exposed, "Total Exposure (seconds)")
+    new_header["ELAPSED"] = (exposed, "Elapsed Time (seconds)")
 
     # 4. Dates and Times
     # Input: DATE-OBS= '2024-08-24T13:47:39'
-    date_obs = header.get('DATE-OBS', '')
+    date_obs = header.get("DATE-OBS", "")
     if date_obs:
         try:
-            t = Time(date_obs, format='isot', scale='utc')
-            new_header['UTDATE'] = (t.strftime('%Y:%m:%d'), 'UT Date')
-            new_header['UTSTART'] = (t.strftime('%H:%M:%S'), 'UT Start')
-            new_header['UTMJD'] = (t.mjd, 'UT MJD at start of exposure')
+            t = Time(date_obs, format="isot", scale="utc")
+            new_header["UTDATE"] = (t.strftime("%Y:%m:%d"), "UT Date")
+            new_header["UTSTART"] = (t.strftime("%H:%M:%S"), "UT Start")
+            new_header["UTMJD"] = (t.mjd, "UT MJD at start of exposure")
             # UTEND would be UTSTART + EXPOSED
-            t_end = t + (exposed / 86400.0) # exposed is seconds
-            new_header['UTEND'] = (t_end.strftime('%H:%M:%S'), 'UT End')
-            new_header['EPOCH'] = (t.jyear, 'Current Epoch, Years A.D.')
+            t_end = t + (exposed / 86400.0)  # exposed is seconds
+            new_header["UTEND"] = (t_end.strftime("%H:%M:%S"), "UT End")
+            new_header["EPOCH"] = (t.jyear, "Current Epoch, Years A.D.")
         except Exception as e:
             logger.warning(f"Could not parse DATE-OBS: {e}")
 
     # 5. Detector Info
     # HIERARCH PI CAMERA SENSOR INFORMATION SENSORNAME
-    sensor_name = 'UNKNOWN'
+    sensor_name = "UNKNOWN"
     for card in header.cards:
-        if 'SENSOR INFORMATION SENSORNAME' in card.keyword:
-             sensor_name = card.value
-             break
-    new_header['DETECTOR'] = (sensor_name, 'Detector name')
+        if "SENSOR INFORMATION SENSORNAME" in card.keyword:
+            sensor_name = card.value
+            break
+    new_header["DETECTOR"] = (sensor_name, "Detector name")
 
     # 6. Grating Info
     # HIERARCH PI SPECTROMETER GRATING SELECTED = '[500nm,150][2][0]'
     # Need to parse: 150 lines/mm, 500nm center?
-    grating_str = ''
+    grating_str = ""
     for card in header.cards:
-        if 'SPECTROMETER GRATING SELECTED' in card.keyword:
+        if "SPECTROMETER GRATING SELECTED" in card.keyword:
             grating_str = card.value
             break
 
     # Attempt to parse [Center, Lines]
     # Example: [500nm,150]
-    match = re.search(r'\[(.*?),(\d+)\]', grating_str)
+    match = re.search(r"\[(.*?),(\d+)\]", grating_str)
     if match:
         # center_val = match.group(1) # e.g. 500nm
         lines_per_mm = match.group(2)
-        new_header['GRATLPMM'] = (int(lines_per_mm), 'Grating Lines per mm')
+        new_header["GRATLPMM"] = (int(lines_per_mm), "Grating Lines per mm")
         # Maybe use lines/mm as ID if no other ID?
-        new_header['GRATID'] = (new_header.get('GRATLPMM'), 'Grating ID')
+        new_header["GRATID"] = (new_header.get("GRATLPMM"), "Grating ID")
 
     # 7. Central Wavelength
     # HIERARCH PI SPECTROMETER GRATING CENTERWAVELENGTH = '600' / nanometers
     center_wl_nm = None
     for card in header.cards:
-        if 'SPECTROMETER GRATING CENTERWAVELENGTH' in card.keyword:
+        if "SPECTROMETER GRATING CENTERWAVELENGTH" in card.keyword:
             try:
                 center_wl_nm = float(card.value)
             except:
@@ -164,24 +270,24 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
 
     if center_wl_nm is not None:
         lambdac_ang = center_wl_nm * 10.0
-        new_header['LAMBDAC'] = (lambdac_ang, 'Central wavelength in Angstrom')
-        new_header['LAMBDAB'] = (lambdac_ang, 'Compatibility keyword')
+        new_header["LAMBDAC"] = (lambdac_ang, "Central wavelength in Angstrom")
+        new_header["LAMBDAB"] = (lambdac_ang, "Compatibility keyword")
 
     # 8. Dispersion
     # Requested to be 'not implemented' / placeholder
     # But usually a float. Let's set to a dummy value or leave it if existing (likely not)
     # Using 0.0 or 1.0 is safer than string 'not implemented' for float fields
-    new_header['DISPERS'] = (0.0, 'Central dispersion (Angstrom/pixel) - NOT IMPL')
+    new_header["DISPERS"] = (0.0, "Central dispersion (Angstrom/pixel) - NOT IMPL")
 
     # 9. Spectrograph ID
     # Not strictly needed but good for completeness
-    if 'SPECTID' not in new_header:
-        new_header['SPECTID'] = ('UNKNOWN', 'Spectrograph ID')
+    if "SPECTID" not in new_header:
+        new_header["SPECTID"] = ("UNKNOWN", "Spectrograph ID")
 
     # 10. Observation Type
     # Try to derive from object name or other fields if possible
     # For now, default to OBJECT if unknown
-    if 'OBSTYPE' not in new_header:
-        new_header['OBSTYPE'] = ('OBJECT', 'Observation type')
+    if "OBSTYPE" not in new_header:
+        new_header["OBSTYPE"] = ("OBJECT", "Observation type")
 
     return new_header
