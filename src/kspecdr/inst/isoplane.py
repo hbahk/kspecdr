@@ -149,7 +149,8 @@ def sanitize_header_drop_unparsable(
     return new
 
 
-def convert_isoplane_header(header: fits.Header) -> fits.Header:
+# TODO: review this - time stamping per frame, add gain/rdnoise settings for different setups
+def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     """
     Convert a PIXIS/Isoplane raw header to the standard kspecdr format.
 
@@ -157,6 +158,8 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     ----------
     header : fits.Header
         The original raw header.
+    ndfclass : str
+        The NDFCLASS of the data (e.g., "MFOBJECT", "MFARC", "MFFFF", "BIAS", "DARK").
 
     Returns
     -------
@@ -171,7 +174,7 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     new_header = sanitize_header_drop_unparsable(new_header, verbose=False)
 
     # 1. Instrument Name
-    new_header["INSTRUME"] = ("ISOPLANE", "KSPEC Backup CCD")
+    new_header["INSTRUME"] = ("ISOPLANE", "KSPEC Backup Spectrograph")
 
     # 2. Gain and Noise (Measured values for Low Noise / Low Gain)
     # RDN = 16.03 e- rms, Gain = 4.09 e-/ADU
@@ -289,5 +292,7 @@ def convert_isoplane_header(header: fits.Header) -> fits.Header:
     # For now, default to OBJECT if unknown
     if "OBSTYPE" not in new_header:
         new_header["OBSTYPE"] = ("OBJECT", "Observation type")
+        
+    new_header["NDFCLASS"] = (ndfclass, "Data Reduction class name (NDFCLASS)")
 
     return new_header
