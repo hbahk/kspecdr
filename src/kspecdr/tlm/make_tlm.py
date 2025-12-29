@@ -983,6 +983,8 @@ def predict_wavelength(
     instrument_code = im_file.get_instrument_code()
     if instrument_code == INST_TAIPAN:
         return predict_wavelength_taipan(im_file, nx, nf)
+    elif instrument_code == INST_ISOPLANE:
+        return predict_wavelength_from_dispersion(im_file, nx, nf)
     raise NotImplementedError(
         f"Wavelength prediction for instrument code {instrument_code} not yet implemented. "
         "This should implement the PREDICT_WAVELEN functionality from the Fortran code."
@@ -1011,6 +1013,40 @@ def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarra
         # Fortran code multiplies by 0.1 (presumably to convert to nm)
         value = lam * 0.1
         wavelength_data[pix, :] = value
+    return wavelength_data
+
+
+def predict_wavelength_from_dispersion(im_file: ImageFile, nx: int, nf: int) -> np.ndarray:
+    """
+    Predict wavelength from dispersion and central wavelength in the header.
+
+    Parameters
+    ----------
+    im_file : ImageFile
+        Image file handler
+    nx : int
+        Number of pixels in the dispersion direction
+    nf : int
+        Number of fibres
+
+    Returns
+    -------
+    np.ndarray
+        Wavelength array
+    """
+    midpix = 0.5 * nx
+    try:
+        dispers_str, _ = im_file.read_header_keyword("DISPERS")
+        lambdac_str, _ = im_file.read_header_keyword("LAMBDAC")
+        dispers = float(dispers_str)
+        lambdac = float(lambdac_str)
+    except Exception as e:
+        logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
+        raise
+    dist_from_midpix = np.linspace(0.5, nx + 0.5, nx) - midpix
+    wavevec = lambdac + dispers * dist_from_midpix * 0.1 # convert to nm
+    wavelength_data = wavevec.reshape(nx, 1).repeat(nf, axis=1)
+    
     return wavelength_data
 
 
