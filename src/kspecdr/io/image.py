@@ -391,6 +391,7 @@ class ImageFile:
             'IFU': 8,      # INST_AAOMEGA_IFU
             'HECTOR': 9,   # INST_SPECTOR_HECTOR
             'AAOMEGA_HECTOR': 10,  # INST_AAOMEGA_HECTOR
+            'ISOPLANE': 99,  # INST_ISOPLANE
         }
         
         for name, code in instrument_codes.items():
