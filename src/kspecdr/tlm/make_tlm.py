@@ -1127,7 +1127,7 @@ def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
         # Create a simple Gaussian kernel as fallback
         kernel_size = int(4 * scale)
         t = np.linspace(-kernel_size, kernel_size, 2 * kernel_size + 1)
-        kernel = np.exp(-0.5 * (t / scale) ** 2)
+        kernel = np.exp(-0.5 * (t / scale) ** 2) # FIXME: use mexican hat wavelet! This will just smooth the signal, not detect peaks.
         kernel = kernel / np.sum(kernel)  # Normalize
         
         # Perform convolution
