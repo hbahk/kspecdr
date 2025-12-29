@@ -65,7 +65,7 @@ def make_tlm(args: Dict[str, Any]) -> None:
         raise ValueError("IMAGE_FILENAME is required")
     tlm_fname = args.get("TLMAP_FILENAME")
     if not tlm_fname:
-        tlm_fname = im_fname.replace(".fits", "_tlm.fits")
+        tlm_fname = im_fname.replace("_im.fits", "_tlm.fits")
     logger.info(f"Generating tramline map from {im_fname}")
     with ImageFile(im_fname) as im_file:
         make_tlm_from_im(im_file, tlm_fname, args)
