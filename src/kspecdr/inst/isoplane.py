@@ -255,8 +255,8 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     match = re.search(r"\[(.*?),(\d+)\]", grating_str)
     if match:
         # center_val = match.group(1) # e.g. 500nm
-        lines_per_mm = match.group(2)
-        new_header["GRATLPMM"] = (int(lines_per_mm), "Grating Lines per mm")
+        lines_per_mm = int(match.group(2))
+        new_header["GRATLPMM"] = (lines_per_mm, "Grating Lines per mm")
         # Maybe use lines/mm as ID if no other ID?
         new_header["GRATID"] = (new_header.get("GRATLPMM"), "Grating ID")
 
@@ -277,10 +277,10 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
         new_header["LAMBDAB"] = (lambdac_ang, "Compatibility keyword")
 
     # 8. Dispersion
-    # Requested to be 'not implemented' / placeholder
-    # But usually a float. Let's set to a dummy value or leave it if existing (likely not)
-    # Using 0.0 or 1.0 is safer than string 'not implemented' for float fields
-    new_header["DISPERS"] = (0.0, "Central dispersion (Angstrom/pixel) - NOT IMPL")
+    reciprocal_linear_dispersion = 23.0 * (1200 / lines_per_mm) # Angstrom / mm, from the isoplane datasheet
+    pixel_width = float(new_header["PI CAMERA SENSOR INFORMATION PIXEL WIDTH"]) * 1e-3 # micron to mm # TODO: check - height or width? they are the same for PIXIS1300BX
+    dispersion = reciprocal_linear_dispersion * pixel_width # Angstrom / pixel
+    new_header["DISPERS"] = (dispersion, "Central dispersion (Angstrom/pixel)")
 
     # 9. Spectrograph ID
     # Not strictly needed but good for completeness
