@@ -253,6 +253,8 @@ def set_instrument_specific_params(
         order = 6
     elif instrument_code == INST_AAOMEGA_HECTOR:
         order = 4
+    elif instrument_code == INST_ISOPLANE:
+        order = 2
 
     # Set peak search method
     pk_search_method = 0  # Default (emergence watershed)
@@ -260,6 +262,8 @@ def set_instrument_specific_params(
         pk_search_method = 1  # Find all local peaks
     elif instrument_code == INST_TAIPAN:
         pk_search_method = 2  # Wavelet convolution
+    elif instrument_code == INST_ISOPLANE:
+        pk_search_method = 2
     elif instrument_code == INST_SPECTOR_HECTOR:
         pk_search_method = 0
     elif instrument_code == INST_AAOMEGA_HECTOR:
