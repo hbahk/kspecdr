@@ -6,6 +6,7 @@ converting the 2dfdr `MAKE_EX` and related subroutines.
 """
 
 import logging
+import sys
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, Union
 from pathlib import Path
@@ -14,6 +15,13 @@ import warnings
 from ..io.image import ImageFile
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # Constants
 MAX_NFIBRES = 1000
@@ -87,25 +95,18 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         instrument_code = im_file.get_instrument_code()
 
         nx_img, ny_img = im_file.get_size()
-        # In 2dfdr, IMG_XY is (NSPEC, NSPAT).
-        # kspecdr ImageFile returns (nx, ny). Usually nx=spectral, ny=spatial for standard orientation?
-        # Let's verify orientation convention.
-        # In `make_im.py`, `read_image_data` returns (nx, ny).
-        # In 2dfdr `TDFIO_IMAGE_READ` reads into `IMG_XY(NSPEC,NSPAT)`.
-        # Assuming standard AAO orientation: X is spectral, Y is spatial (fibers).
 
         img_data = im_file.read_image_data(nx_img, ny_img)
         var_data = im_file.read_variance_data(nx_img, ny_img)
 
         # 3. Read Tramline Map
         with ImageFile(tlm_fname, mode='READ') as tlm_file:
-            nx_tlm, nfib = tlm_file.get_size()
+            nx_tlm, nfib  = tlm_file.get_size()
             tlm_data = tlm_file.read_image_data(nx_tlm, nfib)
 
             # Read fiber types
             fiber_types, _ = im_file.read_fiber_types(MAX_NFIBRES)
             # Note: 2dfdr reads fiber types from IM file usually, as TLM might not have them updated?
-            # Code says: CALL TDFIO_FIBRES_READ_TYPES(IM_ID,...)
 
             # Get MWIDTH from TLM header (Median FWHM)
             mwidth = float(tlm_file.get_header_value('MWIDTH', 5.0))
@@ -118,6 +119,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
             # kspecdr ImageFile doesn't have explicit `read_wave_data` yet,
             # but `read_image_data` reads primary. WAVELA is likely an extension.
             # We'll handle this later or assume primary for now if not found.
+            # TODO: read WAVELA from TLM
             wave_data = None
             try:
                 # Naive attempt to read wavelength from an extension named 'WAVELA'
@@ -138,57 +140,11 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
     # (Placeholder: SCATSUB)
     scatsub = args.get('SCATSUB', 'NONE')
     if scatsub != 'NONE':
+        # TODO: implement scattered light subtraction
         logger.warning(f"Scattered light subtraction '{scatsub}' requested but not implemented yet.")
 
-    # 6. Transpose Data for Extraction Routines?
-    # 2dfdr comments: "algorithms ... process data in standard matrix format i.e. (row,column) ... not (x,y)"
-    # "IMG_RC(1:NSPAT,1:NSPEC) = TRANSPOSE(IMG_XY(1:NSPEC,1:NSPAT))"
-    # So 2dfdr uses (Spatial, Spectral) for processing.
-    # Our `img_data` is (nx, ny) = (Spectral, Spatial).
-    # So we should transpose to (Spatial, Spectral) to match 2dfdr logic if we strictly follow it,
-    # OR adapt the algorithms to use (Spectral, Spatial).
-    #
-    # `SUMEXTR` in Fortran takes `INDAT(NSPAT,NSPEC)`.
-    # And iterates `DO J=1,NSPEC` (spectral), `DO FIBRE=1,NFIB`.
-    # It extracts column by column (spectral slice).
-    #
-    # Let's keep data in (Spectral, Spatial) = (X, Y) which is standard Python/Numpy image order often (Y, X)?
-    # Wait, astropy.io.fits returns (Y, X) = (Spatial, Spectral).
-    # `ImageFile.read_image_data` returns `self.hdul[0].data`.
-    # If FITS is (NAXIS1=Spectral, NAXIS2=Spatial), then Numpy array is (Spatial, Spectral).
-    #
-    # Let's check `src/kspecdr/io/image.py`.
-    # `read_image_data` returns `self.hdul[0].data`.
-    # If `ImageFile` does NO transposing, then `img_data` is (Ny, Nx) i.e. (Spatial, Spectral).
-    #
-    # In `make_im.py`:
-    # `image_data = raw_file.read_image_data(nx, ny)`
-    # It seems to expect the data in a certain shape.
-    #
-    # Let's assume `img_data` is (Spatial, Spectral) [Numpy default for FITS].
-    # 2dfdr `IMG_RC` is (NSPAT, NSPEC).
-    # So `img_data` IS ALREADY in the format 2dfdr calls "RC" (Row-Col / Spatial-Spectral).
-    #
-    # However, 2dfdr's `IMG_XY` was (NSPEC, NSPAT). It seems 2dfdr reads it transposed or treats it differently?
-    # "CALL TDFIO_IMAGE_READ(IM_ID,IMG_XY,NSPEC,NSPAT,STATUS)" -> reads X,Y.
-    # Then "IMG_RC = TRANSPOSE(IMG_XY)".
-    #
-    # To avoid confusion, let's stick to variable names `nspat` (rows) and `nspec` (cols/spectral).
-    # If `img_data` is (NSPAT, NSPEC), then:
-    # TLM is usually (NSPEC, NFIB).
-
-    nspat, nspec = img_data.shape
-    # Wait, check if nspec/nspat match.
-    # Usually FITS NAXIS1 = Spectral (X), NAXIS2 = Spatial (Y).
-    # Numpy shape = (NAXIS2, NAXIS1) = (Spatial, Spectral).
-    # So `img_data.shape` is (NSPAT, NSPEC).
-
-    # TLM data: FITS NAXIS1 = Spectral (X), NAXIS2 = Fiber ID (Y).
-    # Numpy shape = (NFIB, NSPEC).
-    # BUT, 2dfdr `TLMAP_XF` is (NPIX, NFIB) i.e. (NSPEC, NFIB).
-    # It seems 2dfdr expects TLM to be (Spectral, Fiber).
-    # If we read TLM with astropy, we get (NFIB, NSPEC).
-    # So we probably need to transpose TLM data to match 2dfdr's (NSPEC, NFIB) convention used in `SUMEXTR`.
+    # 6. Transpose Data for Extraction Routines
+    nspec, nspat = img_data.shape
 
     tlm_data_T = tlm_data.T # Now (NSPEC, NFIB)
 
@@ -296,13 +252,13 @@ def sum_extract(
     Parameters
     ----------
     nspat : int
-        Number of spatial pixels (rows in indat)
+        Number of spatial pixels (cols in indat)
     nspec : int
-        Number of spectral pixels (cols in indat)
+        Number of spectral pixels (rows in indat)
     indat : np.ndarray
-        Input image (NSPAT, NSPEC)
+        Input image (NSPEC, NSPAT)
     invar : np.ndarray
-        Input variance (NSPAT, NSPEC)
+        Input variance (NSPEC, NSPAT)
     outdat : np.ndarray
         Output spectra (NSPEC, NFIB) - Updated in place
     outvar : np.ndarray
@@ -438,8 +394,8 @@ def sum_extract(
                 if overlap_max > overlap_min:
                     fraction = overlap_max - overlap_min
 
-                    val = indat[pix, j]
-                    var = invar[pix, j]
+                    val = indat[j, pix]
+                    var = invar[j, pix]
 
                     if np.isnan(val) or np.isnan(var):
                         bad_pixel = True
