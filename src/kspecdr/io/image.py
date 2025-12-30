@@ -144,8 +144,8 @@ class ImageFile:
         # data = data.T
         
         # Check dimensions
-        if data.shape != (nx, ny):
-            logger.warning(f"Expected shape ({nx}, {ny}), got {data.shape}")
+        if data.shape != (ny, nx):
+            logger.warning(f"Expected shape ({ny}, {nx}), got {data.shape}")
             
         return data.astype(np.float32)
     
