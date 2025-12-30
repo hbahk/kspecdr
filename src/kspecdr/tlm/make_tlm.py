@@ -23,6 +23,21 @@ from .match_fibers import (
     match_fibers_taipan,
     match_fibers_isoplane,
 )
+from ..constants import (
+    INST_GENERIC,
+    INST_2DF,
+    INST_6DF,
+    INST_AAOMEGA_2DF,
+    INST_HERMES,
+    INST_AAOMEGA_SAMI,
+    INST_TAIPAN,
+    INST_AAOMEGA_KOALA,
+    INST_AAOMEGA_IFU,
+    INST_SPECTOR_HECTOR,
+    INST_AAOMEGA_HECTOR,
+    INST_ISOPLANE,
+    MAX__NFIBRES,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,23 +47,6 @@ if not logger.hasHandlers():
     formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-
-# Instrument codes (matching Fortran constants)
-INST_GENERIC = 0
-INST_2DF = 1
-INST_6DF = 2
-INST_AAOMEGA_2DF = 3
-INST_HERMES = 4
-INST_AAOMEGA_SAMI = 5
-INST_TAIPAN = 6
-INST_AAOMEGA_KOALA = 7
-INST_AAOMEGA_IFU = 8
-INST_SPECTOR_HECTOR = 9
-INST_AAOMEGA_HECTOR = 10
-INST_ISOPLANE = 99
-
-# Maximum number of fibres
-MAX__NFIBRES = 1000
 
 
 def make_tlm(args: Dict[str, Any]) -> None:
