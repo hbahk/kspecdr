@@ -177,7 +177,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
     # If `img_data` is (NSPAT, NSPEC), then:
     # TLM is usually (NSPEC, NFIB).
 
-    nspat, nspec = img_data.shape
+    nspec, nspat = img_data.shape
     # Wait, check if nspec/nspat match.
     # Usually FITS NAXIS1 = Spectral (X), NAXIS2 = Spatial (Y).
     # Numpy shape = (NAXIS2, NAXIS1) = (Spatial, Spectral).
@@ -295,13 +295,13 @@ def sum_extract(
     Parameters
     ----------
     nspat : int
-        Number of spatial pixels (rows in indat)
+        Number of spatial pixels (cols in indat)
     nspec : int
-        Number of spectral pixels (cols in indat)
+        Number of spectral pixels (rows in indat)
     indat : np.ndarray
-        Input image (NSPAT, NSPEC)
+        Input image (NSPEC, NSPAT)
     invar : np.ndarray
-        Input variance (NSPAT, NSPEC)
+        Input variance (NSPEC, NSPAT)
     outdat : np.ndarray
         Output spectra (NSPEC, NFIB) - Updated in place
     outvar : np.ndarray
@@ -437,8 +437,8 @@ def sum_extract(
                 if overlap_max > overlap_min:
                     fraction = overlap_max - overlap_min
 
-                    val = indat[pix, j]
-                    var = invar[pix, j]
+                    val = indat[j, pix]
+                    var = invar[j, pix]
 
                     if np.isnan(val) or np.isnan(var):
                         bad_pixel = True
