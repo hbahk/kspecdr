@@ -208,6 +208,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
              # 2dfdr: IF (OPERAT=='TRAM') CALL UMFIM_TRMEXTR...
              # ELSE CALL SUMEXTR...
              # We will implement SUMEXTR logic here as requested "simple summing"
+             # TODO: Implement TRAM extraction
              pass
 
         logger.info(f"Performing SUM extraction with width={width}")
