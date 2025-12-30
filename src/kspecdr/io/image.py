@@ -244,7 +244,7 @@ class ImageFile:
         # # Transpose to match Fortran convention
         # data = data.T
         
-        if data.shape != (nx, ny):
+        if data.shape != (ny, nx):
             logger.warning(f"Expected variance shape ({nx}, {ny}), got {data.shape}")
             
         return data.astype(np.float32)
