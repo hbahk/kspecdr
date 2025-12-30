@@ -10,7 +10,7 @@ TODO: check the usage of the arguments in the function calls.
 import numpy as np
 import sys
 import logging
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Sequence, Union
 from scipy import ndimage
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
@@ -18,7 +18,11 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, fcluster
 
 from kspecdr.io.image import ImageFile
-from .match_fibers import taipan_nominal_fibpos, match_fibers_taipan, match_fibers_isoplane
+from .match_fibers import (
+    taipan_nominal_fibpos,
+    match_fibers_taipan,
+    match_fibers_isoplane,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -118,8 +122,8 @@ def make_tlm_other(
     img_data, var_data, fibre_types = read_instrument_data(im_file, instrument_code)
 
     # Extract SPECTID from header and add to args for matching
-    spectid = im_file.get_header_value('SPECTID', 'RED')
-    args['SPECTID'] = spectid
+    spectid = im_file.get_header_value("SPECTID", "RED")
+    args["SPECTID"] = spectid
 
     # Step 1: Set instrument-specific parameters
     order, pk_search_method, do_distortion, sparse_fibs, experimental, qad_pksearch = (
@@ -144,6 +148,7 @@ def make_tlm_other(
     nx, ny = img_data.shape
     max_ntraces = len(fibre_types)
     nf = len(fibre_types)
+    logger.info(f"Max number of traces: {max_ntraces}")
 
     ntraces, traces, spat_slice, pk_posn = detect_traces(
         img_data,
@@ -468,7 +473,8 @@ def detect_traces(
 
         elif pk_search_mthd == 2:
             # Wavelet convolution method
-            peaks = _wavelet_peak_detection(col_data, scale=2.0, max_peaks=max_ntraces)
+            # peaks = _wavelet_peak_detection_old(col_data, scale=2.0, max_peaks=max_ntraces)
+            peaks = _wavelet_peak_detection(col_data, max_peaks=max_ntraces)
             # Convert peak positions to indices
             if len(peaks) > 0:
                 peaks = peaks.astype(int)
@@ -716,7 +722,7 @@ def match_traces_to_fibres(
         # Since I can't easily change the call site in `make_tlm_other` without seeing it (it is in this file).
         # Let's check `make_tlm_other`.
 
-        spectid = args.get('SPECTID', 'RED') # Default to RED
+        spectid = args.get("SPECTID", "RED")  # Default to RED
 
         # Get nominal positions
         nf_taipan = len(fibre_types)
@@ -1020,7 +1026,9 @@ def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarra
     return wavelength_data
 
 
-def predict_wavelength_from_dispersion(im_file: ImageFile, nx: int, nf: int) -> np.ndarray:
+def predict_wavelength_from_dispersion(
+    im_file: ImageFile, nx: int, nf: int
+) -> np.ndarray:
     """
     Predict wavelength from dispersion and central wavelength in the header.
 
@@ -1048,9 +1056,9 @@ def predict_wavelength_from_dispersion(im_file: ImageFile, nx: int, nf: int) -> 
         logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
         raise
     dist_from_midpix = np.linspace(0.5, nx + 0.5, nx) - midpix
-    wavevec = lambdac + dispers * dist_from_midpix * 0.1 # convert to nm
+    wavevec = lambdac + dispers * dist_from_midpix * 0.1  # convert to nm
     wavelength_data = wavevec.reshape(nx, 1).repeat(nf, axis=1)
-    
+
     return wavelength_data
 
 
@@ -1088,7 +1096,7 @@ def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:
 def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
     """
     Perform wavelet convolution on a signal.
-    
+
     This function implements a simplified version of the Fortran WAVELET_CONVOLUTION
     using a Mexican hat wavelet.
 
@@ -1098,7 +1106,7 @@ def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
         Input signal
     scale : float
         Wavelet scale parameter
-    
+
     Returns
     -------
     np.ndarray
@@ -1106,30 +1114,32 @@ def _wavelet_convolution(signal: np.ndarray, scale: float) -> np.ndarray:
     """
     try:
         import pywt
-        
+
         # Use Mexican hat wavelet (Ricker wavelet in pywt)
         # This is equivalent to the Fortran implementation
-        wavelet = 'mexh'  # Mexican hat wavelet
-        
+        wavelet = "mexh"  # Mexican hat wavelet
+
         # Perform continuous wavelet transform
         # scales parameter determines the scale of the wavelet
         scales = np.array([scale])
         coef, freqs = pywt.cwt(signal, scales, wavelet)
-        
+
         # Return the real part of the wavelet coefficients
         return np.real(coef[0, :])
-        
+
     except ImportError:
         # Fallback to simple convolution if pywt is not available
         logger.warning("PyWavelets not available, using simple convolution")
         from scipy import signal as scipy_signal
-        
+
         # Create a simple Gaussian kernel as fallback
         kernel_size = int(4 * scale)
         t = np.linspace(-kernel_size, kernel_size, 2 * kernel_size + 1)
-        kernel = np.exp(-0.5 * (t / scale) ** 2) # FIXME: use mexican hat wavelet! This will just smooth the signal, not detect peaks.
+        kernel = np.exp(
+            -0.5 * (t / scale) ** 2
+        )  # FIXME: use mexican hat wavelet! This will just smooth the signal, not detect peaks.
         kernel = kernel / np.sum(kernel)  # Normalize
-        
+
         # Perform convolution
         convolved = scipy_signal.convolve(signal, kernel, mode="same")
         return convolved
@@ -1275,7 +1285,7 @@ def _wavelet_peak_detection_scipy(
         widths = [2, 4, 8]
 
     # Use scipy's find_peaks_cwt
-    peaks = find_peaks_cwt(col_data, widths) # default: ricker wavelet
+    peaks = find_peaks_cwt(col_data, widths)  # default: ricker wavelet
 
     # If we have more peaks than max_peaks, select the highest ones
     if max_peaks is not None and len(peaks) > max_peaks:
@@ -1289,7 +1299,238 @@ def _wavelet_peak_detection_scipy(
     return peaks.astype(float)
 
 
+def _find_zero_crossings_with_width(
+    signal: np.ndarray, peaks: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    lhs_zc = []
+    rhs_zc = []
+    widths = []
+
+    for peak_idx in peaks:
+        if signal[peak_idx] <= 0.0:
+            continue
+
+        # left
+        zero_lhs = -1.0
+        for j in range(peak_idx, -1, -1):
+            if signal[j] < 0.0:
+                j0, j1 = j, j + 1
+                zero_lhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
+                break
+
+        # right
+        zero_rhs = -1.0
+        for j in range(peak_idx, len(signal)):
+            if signal[j] < 0.0:
+                j0, j1 = j - 1, j
+                zero_rhs = j0 - (j1 - j0) / (signal[j1] - signal[j0]) * signal[j0]
+                break
+
+        if zero_lhs >= 0 and zero_rhs >= 0:
+            lhs_zc.append(zero_lhs)
+            rhs_zc.append(zero_rhs)
+            widths.append(zero_rhs - zero_lhs)
+
+    return np.array(lhs_zc), np.array(rhs_zc), np.array(widths)
+
+
+def _filter_by_width(
+    peaks: np.ndarray,
+    widths: np.ndarray,
+    min_keep: int,
+    rel_tol: float = 0.35,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Keep peaks whose widths are near the median width.
+    rel_tol: relative tolerance to the median width (e.g. 0.35 -> median±35%)
+    min_keep: minimum number of peaks to keep
+        to prevent too many peaks from being filtered out (e.g. late columns)
+        if the number of peaks is less than min_keep, do not apply width filter
+        and return the original peaks and widths
+
+    Returns
+    -------
+    tuple
+        (filtered_peaks, filtered_widths)
+    """
+    if len(peaks) == 0:
+        return peaks, widths
+
+    w_med = float(np.median(widths))
+    m = (widths > (1 - rel_tol) * w_med) & (widths < (1 + rel_tol) * w_med)
+
+    # safety check: if too few peaks are left, do not apply width filter
+    if np.count_nonzero(m) < min_keep:
+        return peaks, widths
+
+    return peaks[m], widths[m]
+
+
+def _select_regular_run_by_spacing(
+    peaks: np.ndarray,
+    expected_n: int,
+) -> np.ndarray:
+    """
+    Select expected_n peaks from peaks, where the adjacent intervals are the most regular.
+    """
+    if len(peaks) <= expected_n:
+        return np.sort(peaks)
+
+    p = np.sort(peaks)
+    best_score = np.inf
+    best_run = None
+
+    # sliding window of length expected_n
+    for i in range(0, len(p) - expected_n + 1):
+        run = p[i : i + expected_n]
+        d = np.diff(run)
+        d_med = np.median(d)
+        # score: relative dispersion (smaller is better)
+        score = np.std(d / d_med) if d_med > 0 else np.inf
+
+        # if the intervals are too irregular, it is not good
+        if score < best_score:
+            best_score = score
+            best_run = run
+
+    return best_run if best_run is not None else p[:expected_n]
+
+
+def _robust_sigma_mad(x: np.ndarray) -> float:
+    """
+    Robust noise estimate using MAD.
+    sigma ~= 1.4826 * MAD
+    """
+    x = np.asarray(x)
+    med = np.nanmedian(x)
+    mad = np.nanmedian(np.abs(x - med))
+    return 1.4826 * mad
+
+
+def _wavelet_convolution_multiscale(
+    signal: np.ndarray, scales: Sequence[float]
+) -> np.ndarray:
+    """
+    Multi-scale Mexican-hat CWT response.
+    Returns per-sample max positive response across scales.
+    """
+    signal = np.asarray(signal, dtype=float)
+
+    try:
+        import pywt
+
+        wavelet = "mexh"
+        scales = np.asarray(list(scales), dtype=float)
+
+        coef, _ = pywt.cwt(signal, scales, wavelet)  # shape: (n_scales, n_samples)
+        coef = np.real(coef)
+
+        # Take the maximum response across scales at each sample.
+        # Keep only positive response for peak detection stability.
+        cwt_max = np.max(coef, axis=0)
+        return cwt_max
+
+    except ImportError:
+        # Fallback: scipy ricker wavelet convolution at multiple widths
+        from scipy import signal as sp_signal
+
+        scales = np.asarray(list(scales), dtype=float)
+        responses = []
+        n = signal.size
+
+        for s in scales:
+            # Build a ricker (mexican hat) kernel; width ~ s
+            # Choose kernel size wide enough to capture lobes
+            half = int(np.ceil(5 * s))
+            if half < 2:
+                half = 2
+            t = np.arange(-half, half + 1, dtype=float)
+            kernel = sp_signal.ricker(t.size, a=s)  # mexican hat
+            resp = sp_signal.convolve(signal, kernel, mode="same")
+            responses.append(resp)
+
+        coef = np.vstack(responses)
+        cwt_max = np.max(coef, axis=0)
+        return cwt_max
+
+
 def _wavelet_peak_detection(
+    col_data: np.ndarray,
+    scales: Union[float, Sequence[float]] = (1.5, 2.0, 2.5, 3.0),
+    k_mad: float = 5.0,
+    max_peaks: int = None,
+    width_rel_tol: float = 0.35,
+) -> np.ndarray:
+    """
+    Detect peaks using multi-scale wavelet response + MAD-based threshold.
+
+    Parameters
+    ----------
+    col_data : np.ndarray
+        Column data to analyze
+    scales : float or sequence of float
+        Wavelet scales (multi-scale). If float, it will be treated as [scales].
+    k_mad : float
+        Threshold in units of MAD-sigma. Typical: 3~8 (start with 5).
+    max_peaks : int, optional
+        Maximum number of peaks to return
+
+    Returns
+    -------
+    np.ndarray
+        Peak positions (float, sub-pixel via zero crossings)
+    """
+    col_data = np.asarray(col_data, dtype=float)
+    if isinstance(scales, (int, float)):
+        scales = [float(scales)]
+
+    # Step 1: Multi-scale wavelet response (per-pixel max across scales)
+    cwt = _wavelet_convolution_multiscale(col_data, scales)
+
+    # Step 2: MAD-based ztol (robust to strong fibers)
+    sigma = _robust_sigma_mad(cwt)
+
+    # If sigma is ~0 (very flat / saturated weirdness), fall back gently
+    if not np.isfinite(sigma) or sigma <= 0:
+        # fall back to 10% of maximum positive value
+        ztol = 0.1 * np.max(cwt)  # 10% of maximum positive value
+    else:
+        ztol = k_mad * sigma
+
+    resonant_peaks = _find_resonant_peaks_ztol(cwt, ztol)
+
+    # Step 3: zero crossings around resonant peaks
+    lhs_zc, rhs_zc, widths = _find_zero_crossings_with_width(cwt, resonant_peaks)
+
+    # Step 4: midpoint of zero crossings
+    if len(lhs_zc) == 0 or len(rhs_zc) == 0:
+        return np.array([], dtype=float)
+
+    peak_positions = 0.5 * (lhs_zc + rhs_zc)
+
+    # Step 5: filter out peaks with widths too far from the median width
+    peak_positions, widths = _filter_by_width(
+        peak_positions, widths, min_keep=max_peaks // 2, rel_tol=width_rel_tol
+    )
+
+    # Step 6: select the most regular run of peaks
+    if max_peaks is not None and len(peak_positions) > max_peaks:
+        peak_positions = _select_regular_run_by_spacing(
+            peak_positions, expected_n=max_peaks
+        )
+
+    # Step 7: last tie-breaking: select the top max_peaks peaks by height
+    if max_peaks is not None and len(peak_positions) > max_peaks:
+        peak_heights = col_data[
+            np.clip(peak_positions.astype(int), 0, len(col_data) - 1)
+        ]
+        order = np.argsort(peak_heights)[::-1]
+        peak_positions = peak_positions[order[:max_peaks]]
+
+    return np.asarray(peak_positions, dtype=float)
+
+
+def _wavelet_peak_detection_old(
     col_data: np.ndarray, scale: float = 2.0, max_peaks: int = None
 ) -> np.ndarray:
     """
