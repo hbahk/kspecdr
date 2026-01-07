@@ -114,8 +114,8 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
             # Read Data
             nx, nf = red_file.get_size()
-            spectra = red_file.read_image_data(nx, nf)
-            variance = red_file.read_variance_data(nx, nf)
+            spectra = red_file.read_image_data(nx, nf).T
+            variance = red_file.read_variance_data(nx, nf).T
 
             # Read Axis (Predicted Wavelengths)
             # In Fortran: TDFIO_AXIS_READ(RED_ID,1,XPTR,NPIX,STATUS)
@@ -244,7 +244,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 new_wave = 0.5 * (pixcal_dp[:-1, :] + pixcal_dp[1:, :])
 
                 # Write WAVELA
-                red_file.write_wavelength_data(new_wave.T)  # (nf, nx)
+                red_file.write_wave_data(new_wave.T)  # (nf, nx)
 
                 # Write SHIFTS (Dummy 1.0 scaling? Fortran: SHIFT_DPA=0.0; SHIFT_DPA(:,2)=1.0)
                 # Because we are doing pixel calibration directly, shifts array is identity?
@@ -259,6 +259,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
                 # Write SHIFTS extension
                 red_file.write_shifts_data(shifts)
+                print("hey")
 
                 logger.info("Wavelength calibration completed successfully.")
 
