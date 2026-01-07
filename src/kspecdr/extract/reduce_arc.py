@@ -4,6 +4,7 @@ Reduce Arc Module
 This module implements the reduction of arc frames to produce wavelength calibrated spectra.
 """
 
+import sys
 import logging
 import shutil
 import numpy as np
@@ -18,6 +19,13 @@ from ..wavecal.calibrate import calibrate_spectral_axes
 from ..wavecal.arc_io import read_arc_file
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 def reduce_arc(args: Dict[str, Any]) -> None:

@@ -2,12 +2,19 @@
 Arc file I/O operations.
 """
 
-import os
+import sys
 import logging
 import numpy as np
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 def read_arc_file(
@@ -110,5 +117,7 @@ def read_arc_file(
     except Exception as e:
         logger.error(f"Error reading arc file: {e}")
         return np.array([]), np.array([]), [], 0
-
+    
+    logger.info(f"Read {len(wlist)} arc lines from {fpath.as_posix()}")
+    
     return np.array(wlist), np.array(ilist), labels, len(wlist)

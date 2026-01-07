@@ -2,6 +2,7 @@
 Main calibration routine.
 """
 
+import sys
 import numpy as np
 import logging
 from scipy.interpolate import interp1d
@@ -16,7 +17,13 @@ from .landmarks import (
 from .crosscorr import crosscorr_analysis, generate_spectra_model
 
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
+if not logger.hasHandlers():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 def calibrate_spectral_axes(
     npix: int,
