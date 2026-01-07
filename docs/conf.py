@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath('../src'))
 
 project = 'kspecdr'
 copyright = '2025, KSPEC Team'
-author = 'KSPEC Team'
+author = 'Hyeonguk Bahk'
 
 version = '0.1.0'
 release = '0.1.0'
