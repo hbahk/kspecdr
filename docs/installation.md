@@ -17,7 +17,7 @@
 1.  Clone the repository:
 
     ```bash
-    git clone https://github.com/your-org/kspecdr.git
+    git clone https://github.com/hbahk/kspecdr.git
     cd kspecdr
     ```
 
