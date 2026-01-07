@@ -248,7 +248,46 @@ class ImageFile:
             logger.warning(f"Expected variance shape ({nx}, {ny}), got {data.shape}")
             
         return data.astype(np.float32)
-        
+
+    def read_wave_data(self, nx: int, ny: int) -> Optional[np.ndarray]:
+        """
+        Read wavelength data from the WAVELA HDU.
+
+        Parameters
+        ----------
+        nx : int
+            Expected x dimension
+        ny : int
+            Expected y dimension
+
+        Returns
+        -------
+        np.ndarray or None
+            Wavelength data array with shape (nx, ny) if found, else None
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+
+        # Look for WAVELA HDU
+        wave_hdu = None
+        for hdu in self.hdul:
+            if 'WAVELA' in hdu.name.upper():
+                wave_hdu = hdu
+                break
+
+        if wave_hdu is None:
+            return None
+
+        data = wave_hdu.data
+        if data is None:
+            return None
+
+        # Check dimensions
+        if data.shape != (ny, nx):
+            logger.warning(f"Expected wavelength shape ({ny}, {nx}), got {data.shape}")
+
+        return data.astype(np.float32)
+
     def write_variance_data(self, data: np.ndarray) -> None:
         """
         Write variance data to the variance HDU.

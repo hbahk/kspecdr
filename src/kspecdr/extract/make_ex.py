@@ -112,23 +112,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
             mwidth = float(tlm_file.get_header_value('MWIDTH', 5.0))
 
             # Read Wavelength data if available
-            # 2dfdr: CALL TDFIO_WAVE_READ(TLM_ID,...)
-            # For now, we assume standard image data reading handles it or we implement specific reader
-            # Check if 'WAVELA' extension exists or use full image read if it's primary?
-            # Usually WAVELA is an extension in TLM.
-            # kspecdr ImageFile doesn't have explicit `read_wave_data` yet,
-            # but `read_image_data` reads primary. WAVELA is likely an extension.
-            # We'll handle this later or assume primary for now if not found.
-            # TODO: read WAVELA from TLM
-            wave_data = None
-            try:
-                # Naive attempt to read wavelength from an extension named 'WAVELA'
-                # This requires extending ImageFile or using astropy directly here.
-                # For now, let's assume specific handling isn't critical for *extraction* math,
-                # but needed for output writing.
-                pass
-            except:
-                pass
+            wave_data = tlm_file.read_wave_data(nx_tlm, nfib)
 
     # 4. Apply TLM Shift (Shift-Rotate-Tweak)
     tlm_shift = float(args.get('TLM_SHIFT', 0.0))
@@ -228,7 +212,16 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
     hdul_out = fits.HDUList([hdu_data, hdu_var])
 
     # Copy WAVELA if available (from TLM usually)
-    # TODO: Implement wavelength copying
+    if wave_data is not None:
+        # wave_data is (NFIB, NSPEC) if read from standard TLM.
+        # Output is (NFIB, NSPEC).
+        # So no transpose needed if TLM is already in output format.
+        # However, check internal consistency.
+        # If read_wave_data returned data.shape == (ny, nx) == (nfib, nx_tlm)
+        # And output is (nfib, nspec).
+        # It matches.
+        hdu_wave = fits.ImageHDU(data=wave_data, name='WAVELA')
+        hdul_out.append(hdu_wave)
 
     hdul_out.writeto(ex_fname, overwrite=True)
     logger.info(f"Written extracted file: {ex_fname}")
