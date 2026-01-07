@@ -69,9 +69,9 @@ def read_arc_file(
             return np.array([]), np.array([]), [], 0
 
     # 2. Get min/max from xvec
-    rng = xvec[-1] - xvec[0]
-    lmin = min(xvec[0], xvec[-1]) - 0.2 * rng
-    lmax = max(xvec[0], xvec[-1]) + 0.2 * rng
+    # rng = xvec[-1] - xvec[0]
+    lmin = min(xvec[0], xvec[-1]) #- 0.2 * rng
+    lmax = max(xvec[0], xvec[-1]) #+ 0.2 * rng
 
     wlist = []
     ilist = []
