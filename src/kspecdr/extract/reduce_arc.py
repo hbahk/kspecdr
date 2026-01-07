@@ -216,7 +216,6 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 ilist,
                 listsize,
                 maxshift,
-                args,
             )
 
             if status == 0:
