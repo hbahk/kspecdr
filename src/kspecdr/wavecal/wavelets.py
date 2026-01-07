@@ -12,15 +12,17 @@ logger = logging.getLogger(__name__)
 # Constants
 ROOT_2PI = 2.506628274
 
+
 def mexican_hat_wavelet(t: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     """
     Calculate the Mexican Hat wavelet at points t.
     Formula: A * (1 - z^2) * exp(-0.5 * z^2)
     where z = t / sigma, A = 1 / (sqrt(2*pi) * sigma^3)
     """
-    z_sq = (t / sigma)**2
+    z_sq = (t / sigma) ** 2
     term = 1.0 / (ROOT_2PI * sigma**3)
     return term * (1 - z_sq) * np.exp(-0.5 * z_sq)
+
 
 def wavelet_convolution(signal: np.ndarray, t: np.ndarray, scale: float) -> np.ndarray:
     """
@@ -57,7 +59,7 @@ def wavelet_convolution(signal: np.ndarray, t: np.ndarray, scale: float) -> np.n
     # However, standard CWT definition involves integral.
     # Discretized: sum( signal * wavelet * dt )
 
-    psi = mexican_hat_wavelet(t_kernel, sigma=1.0) # Base wavelet
+    psi = mexican_hat_wavelet(t_kernel, sigma=1.0)  # Base wavelet
     # Rescale for the daughter wavelet
     # The Fortran code: DAUGHTER_WAVELET(A,B,T) = 1.0/SQRT(A)*MOTHER_WAVELET((T-B)/A)
     # Here MOTHER_WAVELET is mexican_hat_wavelet(T) with sigma=1.0.
@@ -65,18 +67,23 @@ def wavelet_convolution(signal: np.ndarray, t: np.ndarray, scale: float) -> np.n
     # The kernel evaluated at t_kernel corresponding to (t-b)
     # Let tau = t_kernel. We want 1/sqrt(a) * psi(tau/a)
 
-    kernel_vals = mexican_hat_wavelet(t_kernel / scale, sigma=1.0) * (1.0 / np.sqrt(scale))
+    kernel_vals = mexican_hat_wavelet(t_kernel / scale, sigma=1.0) * (
+        1.0 / np.sqrt(scale)
+    )
 
     # Multiply by dt for the integral approximation
     kernel = kernel_vals * dt
 
     # Convolve
     # mode='same' returns output of same length as signal
-    convolved = scipy_signal.convolve(signal, kernel, mode='same')
+    convolved = scipy_signal.convolve(signal, kernel, mode="same")
 
     return convolved
 
-def wavelet_find_res_peaks_ztol(signal: np.ndarray, t: np.ndarray, ztol: float) -> np.ndarray:
+
+def wavelet_find_res_peaks_ztol(
+    signal: np.ndarray, t: np.ndarray, ztol: float
+) -> np.ndarray:
     """
     Find resonant peaks in signal above zero tolerance.
     Returns indices of peaks.
@@ -87,7 +94,7 @@ def wavelet_find_res_peaks_ztol(signal: np.ndarray, t: np.ndarray, ztol: float) 
     in_positive_range = False
     beg_idx = 0
 
-    for i in range(1, n - 1): # Fortran 2..N-1 (1-based), so 1..N-2 (0-based)
+    for i in range(1, n - 1):  # Fortran 2..N-1 (1-based), so 1..N-2 (0-based)
         if in_positive_range:
             if signal[i] < ztol:
                 # End of positive range
@@ -95,7 +102,7 @@ def wavelet_find_res_peaks_ztol(signal: np.ndarray, t: np.ndarray, ztol: float) 
                 end_idx = i - 1
 
                 # Find max in range [beg_idx, end_idx]
-                max_idx = beg_idx + np.argmax(signal[beg_idx:end_idx+1])
+                max_idx = beg_idx + np.argmax(signal[beg_idx : end_idx + 1])
                 peaks.append(max_idx)
         else:
             if signal[i] >= ztol:
@@ -104,7 +111,10 @@ def wavelet_find_res_peaks_ztol(signal: np.ndarray, t: np.ndarray, ztol: float) 
 
     return np.array(peaks, dtype=int)
 
-def wavelet_find_zero_crossings2(signal: np.ndarray, t: np.ndarray, peaks: np.ndarray, ztol: float) -> tuple[np.ndarray, np.ndarray]:
+
+def wavelet_find_zero_crossings2(
+    signal: np.ndarray, t: np.ndarray, peaks: np.ndarray, ztol: float
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Find LHS and RHS zero crossings for each peak.
     """
@@ -118,7 +128,7 @@ def wavelet_find_zero_crossings2(signal: np.ndarray, t: np.ndarray, peaks: np.nd
 
         # Find LHS zero crossing
         zero_lhs = -1.0
-        for j in range(p_idx, 0, -1): # Scan left
+        for j in range(p_idx, 0, -1):  # Scan left
             if signal[j] < 0.0:
                 # S(j) < 0, S(j+1) > 0 (since we started from peak>0)
                 # Note: Fortran loop `DO J=PIX(I),1,-1`, if S(J)<0 then interpolate J, J+1
@@ -131,7 +141,7 @@ def wavelet_find_zero_crossings2(signal: np.ndarray, t: np.ndarray, peaks: np.nd
 
         # Find RHS zero crossing
         zero_rhs = -1.0
-        for j in range(p_idx, n): # Scan right
+        for j in range(p_idx, n):  # Scan right
             if signal[j] < 0.0:
                 # S(j) < 0, S(j-1) > 0
                 j0, j1 = j - 1, j
@@ -146,6 +156,7 @@ def wavelet_find_zero_crossings2(signal: np.ndarray, t: np.ndarray, peaks: np.nd
             rhs_zc.append(zero_rhs)
 
     return np.array(lhs_zc), np.array(rhs_zc)
+
 
 def find_resonant_peaks2(signal: np.ndarray, t: np.ndarray, ztol: float) -> np.ndarray:
     """
@@ -164,6 +175,7 @@ def find_resonant_peaks2(signal: np.ndarray, t: np.ndarray, ztol: float) -> np.n
     else:
         return np.array([])
 
+
 def calc_medmad(data: np.ndarray) -> tuple[float, float]:
     """Calculate median and MAD of data."""
     valid = data[np.isfinite(data)]
@@ -173,6 +185,7 @@ def calc_medmad(data: np.ndarray) -> tuple[float, float]:
     med = np.median(valid)
     mad = np.median(np.abs(valid - med))
     return med, mad
+
 
 def analyse_arc_signal(arc_sig: np.ndarray) -> tuple[float, float, float, float, float]:
     """
@@ -226,14 +239,14 @@ def analyse_arc_signal(arc_sig: np.ndarray) -> tuple[float, float, float, float,
     valid_sigmas = []
     for w in widths:
         if w > 0:
-            val = (0.5 * w)**2 - scale**2
+            val = (0.5 * w) ** 2 - scale**2
             if val > 0:
                 valid_sigmas.append(np.sqrt(val))
 
     if valid_sigmas:
         al_sigma = np.median(valid_sigmas)
     else:
-        al_sigma = 1.0 # Fallback
+        al_sigma = 1.0  # Fallback
 
     # 3. Wavelet resonance analysis
     ares = np.sqrt(5.0) * al_sigma

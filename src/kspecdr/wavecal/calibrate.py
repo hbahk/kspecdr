@@ -7,12 +7,30 @@ import logging
 from scipy.interpolate import interp1d
 
 from .wavelets import analyse_arc_signal
-from .landmarks import landmark_register, synchronise_signals, synchronise_calibration_last, robust_polyfit
+from .landmarks import (
+    landmark_register,
+    synchronise_signals,
+    synchronise_calibration_last,
+    robust_polyfit,
+)
 from .crosscorr import crosscorr_analysis, generate_spectra_model
 
 logger = logging.getLogger(__name__)
 
-def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance: np.ndarray, pred_axis: np.ndarray, goodfib: np.ndarray, lamb_tab: np.ndarray, flux_tab: np.ndarray, size_tab: int, maxshift: int, args: dict) -> tuple[np.ndarray, int]:
+
+def calibrate_spectral_axes(
+    npix: int,
+    nfib: int,
+    spectra: np.ndarray,
+    variance: np.ndarray,
+    pred_axis: np.ndarray,
+    goodfib: np.ndarray,
+    lamb_tab: np.ndarray,
+    flux_tab: np.ndarray,
+    size_tab: int,
+    maxshift: int,
+    args: dict,
+) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.
 
@@ -40,7 +58,7 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
                 break
         if not found:
             logger.error("No good fibres found.")
-            return np.zeros((npix+1, nfib)), -1
+            return np.zeros((npix + 1, nfib)), -1
 
     logger.info(f"Reference fibre: {ref_fib}")
 
@@ -79,7 +97,9 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
 
     mn_noise, sd_noise, sigma_inpix, ares, ztol = analyse_arc_signal(ref_signal)
 
-    logger.info(f"Sigma: {sigma_inpix:.2f} pix. Noise: Mean={mn_noise:.2f}, SD={sd_noise:.2f}")
+    logger.info(
+        f"Sigma: {sigma_inpix:.2f} pix. Noise: Mean={mn_noise:.2f}, SD={sd_noise:.2f}"
+    )
 
     # 2.1 Mask blends
     # Mask lines too close
@@ -96,24 +116,26 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
 
     for idx in blend_indices:
         # Check fluxes. If one is dominant (>10x), keep it.
-        if av[idx] < 10.0 * av[idx+1] and av[idx+1] < 10.0 * av[idx]:
-             mask[idx] = True
-             mask[idx+1] = True # Mask both? Fortran masks based on complex logic.
-             # "if one line of flux > 10.0 the others we assume that this profile is only effected by blending in a very small way"
-             # So if one is dominant, we keep it. If comparable, mask both?
-             # Fortran: IF ( ... AND AV(I) < 10.0*AV(IDX0) ) THEN MASK(I)=TRUE
-             # It removes the weaker one.
-             pass
-        elif av[idx] >= 10.0 * av[idx+1]:
-             mask[idx+1] = True
+        if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
+            mask[idx] = True
+            mask[idx + 1] = True  # Mask both? Fortran masks based on complex logic.
+            # "if one line of flux > 10.0 the others we assume that this profile is only effected by blending in a very small way"
+            # So if one is dominant, we keep it. If comparable, mask both?
+            # Fortran: IF ( ... AND AV(I) < 10.0*AV(IDX0) ) THEN MASK(I)=TRUE
+            # It removes the weaker one.
+            pass
+        elif av[idx] >= 10.0 * av[idx + 1]:
+            mask[idx + 1] = True
         else:
-             mask[idx] = True
+            mask[idx] = True
 
     # 3. Landmark Register
     lmr, nlm = landmark_register(spectra, npix, nfib, ~goodfib, ref_fib, ares, ztol)
 
     # 4. Rebin Spectra (Synchronise)
-    rebin_spectra = synchronise_signals(spectra, npix, nfib, ~goodfib, ref_fib, lmr, nlm)
+    rebin_spectra = synchronise_signals(
+        spectra, npix, nfib, ~goodfib, ref_fib, lmr, nlm
+    )
 
     # 5. Combine to Template
     # Average good fibers
@@ -141,11 +163,23 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
     np_ext = 7
     # Binary dilation could work
     from scipy.ndimage import binary_dilation
+
     template_mask = binary_dilation(template_mask, iterations=np_ext)
     template_spectra[template_mask] = 0.0
 
     # 6. Cross Correlation
-    fshiftv = crosscorr_analysis(template_spectra, template_mask, npix, muv, av, mask, m, sigma_inpix, cen_axis, maxshift)
+    fshiftv = crosscorr_analysis(
+        template_spectra,
+        template_mask,
+        npix,
+        muv,
+        av,
+        mask,
+        m,
+        sigma_inpix,
+        cen_axis,
+        maxshift,
+    )
 
     # Interpolate shifted axis
     # shift_axis[i] = cen_axis[i + shift]
@@ -164,7 +198,13 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
     shifted_indices = pixel_indices + fshiftv
 
     # Extrapolate/Interpolate
-    f_interp = interp1d(pixel_indices, cen_axis, kind='linear', bounds_error=False, fill_value="extrapolate")
+    f_interp = interp1d(
+        pixel_indices,
+        cen_axis,
+        kind="linear",
+        bounds_error=False,
+        fill_value="extrapolate",
+    )
     shift_axis = f_interp(shifted_indices)
 
     # 7. Identify Peaks in Template (Shifted)
@@ -177,7 +217,8 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
     hw = int(np.ceil(3.0 * sigma_inpix))
 
     for i in range(m):
-        if mask2[i]: continue
+        if mask2[i]:
+            continue
 
         # Find pixel corresponding to muv[i] in shifted template
         # shift_axis maps Pixel -> Wavelength. We want Wavelength -> Pixel.
@@ -185,7 +226,7 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
 
         # Or find index where shift_axis is closest to muv[i]
         idx1 = np.searchsorted(shift_axis, muv[i])
-        idx1 = np.clip(idx1, 0, npix-1)
+        idx1 = np.clip(idx1, 0, npix - 1)
 
         # Search window around idx1
         start = max(0, idx1 - hw)
@@ -208,11 +249,11 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
             continue
 
         # Quadratic refinement
-        y0 = template_spectra[local_max_idx-1]
+        y0 = template_spectra[local_max_idx - 1]
         y1 = template_spectra[local_max_idx]
-        y2 = template_spectra[local_max_idx+1]
+        y2 = template_spectra[local_max_idx + 1]
 
-        denom = 2*y1 - y0 - y2
+        denom = 2 * y1 - y0 - y2
         if denom == 0:
             mask2[i] = True
             continue
@@ -226,14 +267,16 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
     valid = ~mask2
     if np.sum(valid) < 4:
         logger.warning("Not enough valid points for cubic fit.")
-        return np.zeros((npix+1, nfib)), -1
+        return np.zeros((npix + 1, nfib)), -1
 
     x_pts = pix_newv[valid]
     y_pts = muv[valid]
 
     # 0-based pixel edges?
     # Fortran: PIXEL_EDGE_AXIS(I)=FLOAT(I)-1.0
-    pixel_edges = np.arange(npix+1, dtype=float) - 0.5 # 0.5 shift to match pixel centers being integers?
+    pixel_edges = (
+        np.arange(npix + 1, dtype=float) - 0.5
+    )  # 0.5 shift to match pixel centers being integers?
     # Wait. Fortran: Pixel centers are I=1..N. Edges I=1..N+1.
     # Edges: 0.0, 1.0, ... N.0.
     # Pixel 1 center: 0.5.
@@ -244,16 +287,18 @@ def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance:
     # Let's align with Fortran convention or keep consistent.
     # If pix_newv is 0-based index.
     # Edges of pixel 0 are -0.5 and 0.5.
-    pixel_edges = np.arange(npix+1, dtype=float) - 0.5
+    pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
 
-    cal_axis = np.zeros(npix+1)
+    cal_axis = np.zeros(npix + 1)
 
     coeffs = robust_polyfit(x_pts, y_pts, 3)
     cal_axis = np.polyval(coeffs, pixel_edges)
 
     # 9. Synchronise Calibration
     # Map cal_axis (Ref) to all fibers
-    synchcal_axes = synchronise_calibration_last(cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm)
+    synchcal_axes = synchronise_calibration_last(
+        cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm
+    )
 
     # Transpose for output (NPIX+1, NFIB) -> (NPIX+1, NFIB) ?
     # Fortran: PIXCAL_DP(NPIX+1,NFIB) = TRANSPOSE(SYNCHCAL_AXES(NFIB,NPIX+1))

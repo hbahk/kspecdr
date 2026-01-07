@@ -9,7 +9,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-def read_arc_file(nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000) -> tuple[np.ndarray, np.ndarray, list, int]:
+
+def read_arc_file(
+    nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000
+) -> tuple[np.ndarray, np.ndarray, list, int]:
     """
     Reads an ASCII text 'arc' file containing wavelengths and intensities.
 
@@ -64,10 +67,10 @@ def read_arc_file(nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000
     logger.info(f"Reading arc file {fname}")
 
     try:
-        with open(fname, 'r') as f:
+        with open(fname, "r") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith('*') or line.startswith('#'):
+                if not line or line.startswith("*") or line.startswith("#"):
                     # Check for #MAP (not implemented here yet)
                     continue
 
@@ -92,7 +95,7 @@ def read_arc_file(nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000
                     label = "??"
                     if "label=" in line.lower():
                         idx = line.lower().find("label=")
-                        label = line[idx+6:idx+8]
+                        label = line[idx + 6 : idx + 8]
                     labels.append(label)
 
                 if len(wlist) >= max_entries:

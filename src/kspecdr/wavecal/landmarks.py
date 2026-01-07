@@ -14,6 +14,7 @@ from .wavelets import wavelet_convolution, wavelet_find_res_peaks_ztol
 
 logger = logging.getLogger(__name__)
 
+
 def robust_polyfit(x, y, order):
     """
     Robust polynomial fitting using RANSAC.
@@ -23,21 +24,33 @@ def robust_polyfit(x, y, order):
         return np.polyfit(x, y, order)
 
     try:
-        model = make_pipeline(PolynomialFeatures(order), RANSACRegressor(LinearRegression(), random_state=42))
+        model = make_pipeline(
+            PolynomialFeatures(order),
+            RANSACRegressor(LinearRegression(), random_state=42),
+        )
         model.fit(x.reshape(-1, 1), y)
 
         # Extract coefficients - this is a bit tricky with Pipeline/RANSAC
         # Easier to just predict
         # Or use the inlier mask to do numpy polyfit
-        inlier_mask = model.named_steps['ransacregressor'].inlier_mask_
+        inlier_mask = model.named_steps["ransacregressor"].inlier_mask_
         if np.sum(inlier_mask) < order + 1:
-             return np.polyfit(x, y, order)
+            return np.polyfit(x, y, order)
 
         return np.polyfit(x[inlier_mask], y[inlier_mask], order)
     except Exception:
         return np.polyfit(x, y, order)
 
-def landmark_register(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarray, ref_fib: int, scale: float, ztol: float) -> tuple[np.ndarray, int]:
+
+def landmark_register(
+    spectra: np.ndarray,
+    npix: int,
+    nfib: int,
+    maskv: np.ndarray,
+    ref_fib: int,
+    scale: float,
+    ztol: float,
+) -> tuple[np.ndarray, int]:
     """
     Register and align landmarks.
 
@@ -54,7 +67,7 @@ def landmark_register(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarr
     peaks_list = []
 
     for fib in range(nfib):
-        if maskv[fib]: # masked
+        if maskv[fib]:  # masked
             peaks_list.append([])
             continue
 
@@ -107,14 +120,16 @@ def landmark_register(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarr
                 last_pos = None
                 # Search backwards from next_fib
                 for f in range(next_fib - direction, ref_fib - direction, -direction):
-                     if f in matches[ref_idx]:
-                         last_pos = matches[ref_idx][f]
-                         break
+                    if f in matches[ref_idx]:
+                        last_pos = matches[ref_idx][f]
+                        break
 
-                if last_pos is None: continue
+                if last_pos is None:
+                    continue
 
                 # Find nearest peak in curr_peaks
-                if len(curr_peaks) == 0: continue
+                if len(curr_peaks) == 0:
+                    continue
 
                 dists = np.abs(curr_peaks - last_pos)
                 min_idx = np.argmin(dists)
@@ -132,7 +147,7 @@ def landmark_register(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarr
 
     valid_tracks = []
     for ref_idx, track in matches.items():
-        if len(track) > 3: # Arbitrary threshold
+        if len(track) > 3:  # Arbitrary threshold
             valid_tracks.append(track)
 
     nlm = len(valid_tracks)
@@ -144,21 +159,30 @@ def landmark_register(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarr
 
     return lmr, nlm
 
-def synchronise_signals(spectra: np.ndarray, npix: int, nfib: int, maskv: np.ndarray, ref_fib: int, lmr: np.ndarray, nlm: int) -> np.ndarray:
+
+def synchronise_signals(
+    spectra: np.ndarray,
+    npix: int,
+    nfib: int,
+    maskv: np.ndarray,
+    ref_fib: int,
+    lmr: np.ndarray,
+    nlm: int,
+) -> np.ndarray:
     """
     Rebin spectra to align landmarks.
     """
     rebin_spectra = np.zeros_like(spectra)
 
-    axis1 = np.arange(npix, dtype=float) # Reference axis
+    axis1 = np.arange(npix, dtype=float)  # Reference axis
 
     for fib in range(nfib):
         if maskv[fib]:
             continue
 
         # Get landmarks
-        x_pts = [] # In this fibre
-        y_pts = [] # In ref fibre
+        x_pts = []  # In this fibre
+        y_pts = []  # In ref fibre
 
         for i in range(nlm):
             p_fib = lmr[fib, i]
@@ -180,8 +204,8 @@ def synchronise_signals(spectra: np.ndarray, npix: int, nfib: int, maskv: np.nda
         # axis2 = f(axis1)
 
         # Normalize for stability
-        coeffs = robust_polyfit(x_pts/npix, y_pts/npix, 2)
-        axis2_norm = np.polyval(coeffs, axis1/npix)
+        coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 2)
+        axis2_norm = np.polyval(coeffs, axis1 / npix)
         axis2 = axis2_norm * npix
 
         # Interpolate
@@ -196,30 +220,41 @@ def synchronise_signals(spectra: np.ndarray, npix: int, nfib: int, maskv: np.nda
         # We want to resample `spectra` (at coords `axis2`) onto the grid `axis1`.
         # So we interpolating (axis2, spectra) onto (axis1).
 
-        f_interp = interp1d(axis2, spectra[:, fib], kind='linear', bounds_error=False, fill_value=0.0)
+        f_interp = interp1d(
+            axis2, spectra[:, fib], kind="linear", bounds_error=False, fill_value=0.0
+        )
         rebin_spectra[:, fib] = f_interp(axis1)
 
     return rebin_spectra
 
-def synchronise_calibration_last(cal_axis: np.ndarray, npix: int, nfib: int, maskv: np.ndarray, ref_fib: int, lmr: np.ndarray, nlm: int) -> np.ndarray:
+
+def synchronise_calibration_last(
+    cal_axis: np.ndarray,
+    npix: int,
+    nfib: int,
+    maskv: np.ndarray,
+    ref_fib: int,
+    lmr: np.ndarray,
+    nlm: int,
+) -> np.ndarray:
     """
     Synchronise calibration from ref fibre to others.
 
     cal_axis: Calibration of reference fibre (wavelengths).
     """
-    synchcal_axes = np.zeros((nfib, npix+1))
+    synchcal_axes = np.zeros((nfib, npix + 1))
 
     # cal_axis has length NPIX+1 (edges)
-    axis1 = np.arange(npix+1, dtype=float) - 0.5 # Pixel edges?
+    axis1 = np.arange(npix + 1, dtype=float) - 0.5  # Pixel edges?
     # In Fortran: AXIS1(I)=FLOAT(I)-1.0. For I=1..NPIX+1. So 0.0 to NPIX.0.
-    axis1 = np.arange(npix+1, dtype=float)
+    axis1 = np.arange(npix + 1, dtype=float)
 
     for fib in range(nfib):
         if maskv[fib]:
             continue
 
-        x_pts = [] # In this fibre (pixel)
-        y_pts = [] # In ref fibre (pixel)
+        x_pts = []  # In this fibre (pixel)
+        y_pts = []  # In ref fibre (pixel)
 
         for i in range(nlm):
             p_fib = lmr[fib, i]
@@ -229,14 +264,14 @@ def synchronise_calibration_last(cal_axis: np.ndarray, npix: int, nfib: int, mas
                 y_pts.append(p_ref)
 
         if len(x_pts) < 3:
-            synchcal_axes[fib, :] = cal_axis # Fallback
+            synchcal_axes[fib, :] = cal_axis  # Fallback
             continue
 
         x_pts = np.array(x_pts)
         y_pts = np.array(y_pts)
 
         # Map this fibre pixels -> ref fibre pixels
-        coeffs = robust_polyfit(x_pts/npix, y_pts/npix, 3) # Cubic
+        coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 3)  # Cubic
 
         axis1_norm = axis1 / npix
         axis2_norm = np.polyval(coeffs, axis1_norm)
@@ -246,7 +281,9 @@ def synchronise_calibration_last(cal_axis: np.ndarray, npix: int, nfib: int, mas
         # We know Ref Fibre Pixels -> Wavelength (cal_axis).
         # Interpolate Wavelength at axis2.
 
-        f_interp = interp1d(axis1, cal_axis, kind='linear', bounds_error=False, fill_value="extrapolate")
+        f_interp = interp1d(
+            axis1, cal_axis, kind="linear", bounds_error=False, fill_value="extrapolate"
+        )
         synchcal_axes[fib, :] = f_interp(axis2)
 
     return synchcal_axes

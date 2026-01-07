@@ -9,7 +9,16 @@ from scipy.interpolate import interp1d
 
 logger = logging.getLogger(__name__)
 
-def generate_spectra_model(muv: np.ndarray, av: np.ndarray, mask: np.ndarray, m: int, sig: float, t: np.ndarray, n: int) -> np.ndarray:
+
+def generate_spectra_model(
+    muv: np.ndarray,
+    av: np.ndarray,
+    mask: np.ndarray,
+    m: int,
+    sig: float,
+    t: np.ndarray,
+    n: int,
+) -> np.ndarray:
     """
     Generate model spectra from line list.
     """
@@ -33,8 +42,8 @@ def generate_spectra_model(muv: np.ndarray, av: np.ndarray, mask: np.ndarray, m:
 
     for mu, a in zip(mu_valid, a_valid):
         # Find range +/- 5 sigma
-        idx_min = np.searchsorted(t, mu - 5*sig)
-        idx_max = np.searchsorted(t, mu + 5*sig)
+        idx_min = np.searchsorted(t, mu - 5 * sig)
+        idx_max = np.searchsorted(t, mu + 5 * sig)
 
         idx_min = max(0, idx_min)
         idx_max = min(n, idx_max)
@@ -49,7 +58,10 @@ def generate_spectra_model(muv: np.ndarray, av: np.ndarray, mask: np.ndarray, m:
 
     return s
 
-def gen_cross_corr_gram(s1: np.ndarray, s2: np.ndarray, n: int, hw: int, max_shift: int) -> np.ndarray:
+
+def gen_cross_corr_gram(
+    s1: np.ndarray, s2: np.ndarray, n: int, hw: int, max_shift: int
+) -> np.ndarray:
     """
     Generate cross-correlogram.
     s1: Template
@@ -69,7 +81,7 @@ def gen_cross_corr_gram(s1: np.ndarray, s2: np.ndarray, n: int, hw: int, max_shi
 
     # Valid range for k
     k1 = 1 + max_shift + hw
-    k2 = n - max_shift - hw # 1-based logic conversion needed?
+    k2 = n - max_shift - hw  # 1-based logic conversion needed?
     # Python 0-based:
     # indices 0..N-1.
     # window center k. range k-hw .. k+hw.
@@ -85,27 +97,32 @@ def gen_cross_corr_gram(s1: np.ndarray, s2: np.ndarray, n: int, hw: int, max_shi
         return dump_a
 
     for k in range(k_start, k_end):
-        s1_win = s1[k-hw : k+hw+1]
+        s1_win = s1[k - hw : k + hw + 1]
 
         # Normalize s1
         std1 = np.std(s1_win)
-        if std1 == 0: continue
+        if std1 == 0:
+            continue
         s1_norm = (s1_win - np.mean(s1_win)) / std1
 
         for l_idx, l in enumerate(range(-max_shift, max_shift + 1)):
-            s2_win = s2[k-hw+l : k+hw+l+1]
+            s2_win = s2[k - hw + l : k + hw + l + 1]
 
             std2 = np.std(s2_win)
-            if std2 == 0: continue
+            if std2 == 0:
+                continue
             s2_norm = (s2_win - np.mean(s2_win)) / std2
 
             # Correlation
-            corr = np.dot(s1_norm, s2_norm) / (len(s1_norm) - 1) # Assuming N-1
+            corr = np.dot(s1_norm, s2_norm) / (len(s1_norm) - 1)  # Assuming N-1
             dump_a[l_idx, k] = corr
 
     return dump_a
 
-def cross_corr_greedy_quad_path_search(crs_cgm: np.ndarray, nrows: int, npix: int) -> np.ndarray:
+
+def cross_corr_greedy_quad_path_search(
+    crs_cgm: np.ndarray, nrows: int, npix: int
+) -> np.ndarray:
     """
     Greedy quadratic path search through cross-correlogram.
     """
@@ -150,10 +167,10 @@ def cross_corr_greedy_quad_path_search(crs_cgm: np.ndarray, nrows: int, npix: in
 
     def objective(params):
         y0, y1, y2 = params
-        y_path = y0*l0 + y1*l1 + y2*l2
+        y_path = y0 * l0 + y1 * l1 + y2 * l2
 
         # Sample CrsCgm
-        y_indices = np.clip(np.round(y_path).astype(int), 0, nrows-1)
+        y_indices = np.clip(np.round(y_path).astype(int), 0, nrows - 1)
 
         # Sum values > 0.5
         vals = crs_cgm[y_indices, np.arange(npix)]
@@ -167,15 +184,26 @@ def cross_corr_greedy_quad_path_search(crs_cgm: np.ndarray, nrows: int, npix: in
     # Let's try Differential Evolution or SHGO as requested/approved.
     from scipy.optimize import differential_evolution
 
-    bounds = [(0, nrows-1), (0, nrows-1), (0, nrows-1)]
+    bounds = [(0, nrows - 1), (0, nrows - 1), (0, nrows - 1)]
     result = differential_evolution(objective, bounds, maxiter=20, popsize=10, tol=0.01)
 
     y0, y1, y2 = result.x
-    best_path = y0*l0 + y1*l1 + y2*l2
+    best_path = y0 * l0 + y1 * l1 + y2 * l2
 
     return best_path
 
-def determine_saturated_lines(template_mask: np.ndarray, cen_axis: np.ndarray, npix: int, sigma_inpix: float, muv: np.ndarray, av: np.ndarray, mask: np.ndarray, m: int, maxshift: int) -> np.ndarray:
+
+def determine_saturated_lines(
+    template_mask: np.ndarray,
+    cen_axis: np.ndarray,
+    npix: int,
+    sigma_inpix: float,
+    muv: np.ndarray,
+    av: np.ndarray,
+    mask: np.ndarray,
+    m: int,
+    maxshift: int,
+) -> np.ndarray:
     """
     Update mask for saturated lines.
     """
@@ -193,14 +221,18 @@ def determine_saturated_lines(template_mask: np.ndarray, cen_axis: np.ndarray, n
     for start, end in zip(starts, ends):
         # Expand by maxshift
         s = max(0, start - maxshift)
-        e = min(npix, end + maxshift) # end is exclusive in Python slice, inclusive pixel index in Fortran logic often needs care
+        e = min(
+            npix, end + maxshift
+        )  # end is exclusive in Python slice, inclusive pixel index in Fortran logic often needs care
 
-        if s >= e: continue
+        if s >= e:
+            continue
 
         # Wavelength range
         # cen_axis is length npix.
         # Check boundary
-        if e >= npix: e = npix - 1
+        if e >= npix:
+            e = npix - 1
 
         lam_min = cen_axis[s]
         lam_max = cen_axis[e]
@@ -211,13 +243,27 @@ def determine_saturated_lines(template_mask: np.ndarray, cen_axis: np.ndarray, n
 
     return updated_mask
 
-def crosscorr_analysis(template_spectra: np.ndarray, template_mask: np.ndarray, npix: int, muv: np.ndarray, av: np.ndarray, mask: np.ndarray, m: int, sigma_inpix: float, cen_axis: np.ndarray, maxshift: int) -> np.ndarray:
+
+def crosscorr_analysis(
+    template_spectra: np.ndarray,
+    template_mask: np.ndarray,
+    npix: int,
+    muv: np.ndarray,
+    av: np.ndarray,
+    mask: np.ndarray,
+    m: int,
+    sigma_inpix: float,
+    cen_axis: np.ndarray,
+    maxshift: int,
+) -> np.ndarray:
     """
     Main cross-correlation analysis routine.
     Returns: fshiftv (fractional shifts)
     """
     # 1. Determine saturated lines
-    updated_mask = determine_saturated_lines(template_mask, cen_axis, npix, sigma_inpix, muv, av, mask, m, maxshift)
+    updated_mask = determine_saturated_lines(
+        template_mask, cen_axis, npix, sigma_inpix, muv, av, mask, m, maxshift
+    )
 
     # 2. Generate model spectra
     # Sigma in Angstroms
@@ -225,7 +271,9 @@ def crosscorr_analysis(template_spectra: np.ndarray, template_mask: np.ndarray, 
     disp = (cen_axis[-1] - cen_axis[0]) / (npix - 1)
     arcline_sigma = sigma_inpix * disp
 
-    model_spectra = generate_spectra_model(muv, av, updated_mask, m, arcline_sigma, cen_axis, npix)
+    model_spectra = generate_spectra_model(
+        muv, av, updated_mask, m, arcline_sigma, cen_axis, npix
+    )
 
     # 3. Generate Cross-Correlogram
     # Using smallest window (HW5 in Fortran)

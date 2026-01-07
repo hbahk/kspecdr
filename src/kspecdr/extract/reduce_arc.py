@@ -19,13 +19,14 @@ from ..wavecal.arc_io import read_arc_file
 
 logger = logging.getLogger(__name__)
 
+
 def reduce_arc(args: Dict[str, Any]) -> None:
     """
     Reduces a raw arc file to produce im(age), ex(tracted) and red(uced) arc files.
     """
 
     # 1. Initialize
-    raw_fname = args.get("FILENAME") # Usually passed? Or inferred?
+    raw_fname = args.get("FILENAME")  # Usually passed? Or inferred?
     # Arguments in Fortran are SDS. Usually contain filenames.
     # User prompt example uses EXTRAC_FILENAME, OUTPUT_FILENAME.
     # Assuming pipeline orchestration calls this with proper args.
@@ -59,7 +60,9 @@ def reduce_arc(args: Dict[str, Any]) -> None:
     tlm_filename = args.get("TLMAP_FILENAME")
 
     if not raw_filename:
-        logger.warning("RAW_FILENAME not provided in args. Assuming previous steps completed or files exist.")
+        logger.warning(
+            "RAW_FILENAME not provided in args. Assuming previous steps completed or files exist."
+        )
 
     # 1. Make IM
     if raw_filename and not (im_filename and Path(im_filename).exists()):
@@ -70,13 +73,13 @@ def reduce_arc(args: Dict[str, Any]) -> None:
     if im_filename and not (ex_filename and Path(ex_filename).exists()):
         # Ensure TLM exists
         if not tlm_filename:
-             tlm_filename = im_filename.replace("_im.fits", "_tlm.fits")
-             args["TLMAP_FILENAME"] = tlm_filename
+            tlm_filename = im_filename.replace("_im.fits", "_tlm.fits")
+            args["TLMAP_FILENAME"] = tlm_filename
 
         make_ex(args)
         if not ex_filename:
-             ex_filename = im_filename.replace("_im.fits", "_ex.fits")
-             args["EXTRAC_FILENAME"] = ex_filename
+            ex_filename = im_filename.replace("_im.fits", "_ex.fits")
+            args["EXTRAC_FILENAME"] = ex_filename
 
     # 3. Create RED file (Copy EX)
     if not red_filename:
@@ -92,10 +95,12 @@ def reduce_arc(args: Dict[str, Any]) -> None:
         # Check if generic calibration requested
         use_generic_calibration = args.get("USE_GENCAL", False)
 
-        if instrument_code == INST_TAIPAN or \
-           instrument_code == INST_AAOMEGA_KOALA or \
-           instrument_code == INST_ISOPLANE or \
-           use_generic_calibration:
+        if (
+            instrument_code == INST_TAIPAN
+            or instrument_code == INST_AAOMEGA_KOALA
+            or instrument_code == INST_ISOPLANE
+            or use_generic_calibration
+        ):
 
             logger.info("Using Generic/TAIPAN Calibration Method")
 
@@ -130,7 +135,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
             try:
                 wave_hdu = red_file.hdul["WAVELA"]
-                wave_data = wave_hdu.data.T # (nx, nf)
+                wave_data = wave_hdu.data.T  # (nx, nf)
                 # This is per-fiber wavelength.
                 # CALIBRATE_SPECTRAL_AXES takes 1D PRED_AXIS.
                 # Fortran REDUCE_ARC:
@@ -160,11 +165,11 @@ def reduce_arc(args: Dict[str, Any]) -> None:
             wave_axis[1:nx] = 0.5 * (xptr[:-1] + xptr[1:])
             # Extrapolate ends
             wave_axis[0] = wave_axis[1] - (wave_axis[2] - wave_axis[1])
-            wave_axis[nx] = wave_axis[nx-1] + (wave_axis[nx-1] - wave_axis[nx-2])
+            wave_axis[nx] = wave_axis[nx - 1] + (wave_axis[nx - 1] - wave_axis[nx - 2])
 
             # Read Fiber Types
             fiber_types, _ = red_file.read_fiber_types(MAX__NFIBRES)
-            goodfib = np.array([ft in ['P', 'S'] for ft in fiber_types[:nf]])
+            goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
 
             # Read Lamp List
             lamp = red_file.get_header_value("LAMPNAME", "")
@@ -181,13 +186,24 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
             # Max Shift
             maxshift = args.get("CRSCGMA_MS", 70)
-            if instrument_code == INST_AAOMEGA_2DF: maxshift = 100
-            if instrument_code == INST_AAOMEGA_SAMI: maxshift = 150
+            if instrument_code == INST_AAOMEGA_2DF:
+                maxshift = 100
+            if instrument_code == INST_AAOMEGA_SAMI:
+                maxshift = 150
 
             # Call Calibration
             pixcal_dp, status = calibrate_spectral_axes(
-                nx, nf, spectra, variance, wave_axis, goodfib,
-                wlist, ilist, listsize, maxshift, args
+                nx,
+                nf,
+                spectra,
+                variance,
+                wave_axis,
+                goodfib,
+                wlist,
+                ilist,
+                listsize,
+                maxshift,
+                args,
             )
 
             if status == 0:
@@ -216,7 +232,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 new_wave = 0.5 * (pixcal_dp[:-1, :] + pixcal_dp[1:, :])
 
                 # Write WAVELA
-                red_file.write_wavelength_data(new_wave.T) # (nf, nx)
+                red_file.write_wavelength_data(new_wave.T)  # (nf, nx)
 
                 # Write SHIFTS (Dummy 1.0 scaling? Fortran: SHIFT_DPA=0.0; SHIFT_DPA(:,2)=1.0)
                 # Because we are doing pixel calibration directly, shifts array is identity?
@@ -226,8 +242,8 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 # CALL TDFIO_SHIFTS_WRITE(...)
 
                 # We should mimic this.
-                shifts = np.zeros((nf, 4)) # MAX_SHIFTS=4 usually?
-                shifts[:, 1] = 1.0 # p1=1 (linear term), p0=0, p2=0
+                shifts = np.zeros((nf, 4))  # MAX_SHIFTS=4 usually?
+                shifts[:, 1] = 1.0  # p1=1 (linear term), p0=0, p2=0
 
                 # Write SHIFTS extension
                 red_file.write_shifts_data(shifts)
@@ -235,5 +251,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 logger.info("Wavelength calibration completed successfully.")
 
         else:
-            logger.warning(f"Instrument {instrument_code} not supported for new calibration method.")
+            logger.warning(
+                f"Instrument {instrument_code} not supported for new calibration method."
+            )
             # Fallback to old methods or placeholder
