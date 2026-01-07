@@ -1054,7 +1054,7 @@ def predict_wavelength_from_dispersion(
         logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
         raise
     dist_from_midpix = np.linspace(0.5, nx + 0.5, nx) - midpix
-    wavevec = lambdac + dispers * dist_from_midpix * 0.1  # convert to nm
+    wavevec = (lambdac + dispers * dist_from_midpix) * 0.1  # convert to nm
     wavelength_data = wavevec.reshape(nx, 1).repeat(nf, axis=1)
 
     return wavelength_data
