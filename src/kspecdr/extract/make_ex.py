@@ -98,6 +98,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
 
         img_data = im_file.read_image_data(nx_img, ny_img)
         var_data = im_file.read_variance_data(nx_img, ny_img)
+        fib_tabl = im_file.read_fiber_table()
 
         # 3. Read Tramline Map
         with ImageFile(tlm_fname, mode='READ') as tlm_file:
@@ -222,6 +223,11 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         # It matches.
         hdu_wave = fits.ImageHDU(data=wave_data, name='WAVELA')
         hdul_out.append(hdu_wave)
+        
+    # Copy FIBRES if available (from IM file)
+    if fib_tabl is not None:
+        hdu_fibres = fits.BinTableHDU(data=fib_tabl, name='FIBRES')
+        hdul_out.append(hdu_fibres)
 
     hdul_out.writeto(ex_fname, overwrite=True)
     logger.info(f"Written extracted file: {ex_fname}")
