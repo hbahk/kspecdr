@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def read_arc_file(
-    nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000
+    nx: int, xvec: np.ndarray, lamp: str, max_entries: int = 20000, arc_dir: str = None
 ) -> tuple[np.ndarray, np.ndarray, list, int]:
     """
     Reads an ASCII text 'arc' file containing wavelengths and intensities.
@@ -26,7 +26,8 @@ def read_arc_file(
         Lamp name
     max_entries : int
         Max entries to read
-
+    arc_dir : str
+        Directory containing arc files
     Returns
     -------
     wlist : np.ndarray
@@ -40,19 +41,24 @@ def read_arc_file(
     """
     # 1. Determine filename
     # TODO: Implement searching in DRCONTROL_DIR or similar.
-    # For now, assume it's in the current directory or 'arc_files' subdir
 
-    fname = f"{lamp.lower()}.arc"
+    if arc_dir:
+        if isinstance(arc_dir, Path):
+            fpath = arc_dir / f"{lamp.lower()}.arc"
+        else:
+            fpath = Path(arc_dir) / f"{lamp.lower()}.arc"
+    else:
+        fpath = Path(f"{lamp.lower()}.arc")
 
     # Check current dir
-    if not os.path.exists(fname):
+    if not fpath.exists():
         # Try arc_files subdir
-        possible_path = os.path.join("arc_files", fname)
-        if os.path.exists(possible_path):
-            fname = possible_path
+        possible_path = fpath.parent / "arc_files" / fpath.name
+        if possible_path.exists():
+            fpath = possible_path
         else:
             # Fallback or error
-            logger.warning(f"Arc file {fname} not found.")
+            logger.warning(f"Arc file {fpath.as_posix()} not found.")
             return np.array([]), np.array([]), [], 0
 
     # 2. Get min/max from xvec
@@ -64,10 +70,10 @@ def read_arc_file(
     ilist = []
     labels = []
 
-    logger.info(f"Reading arc file {fname}")
+    logger.info(f"Reading arc file {fpath.as_posix()}")
 
     try:
-        with open(fname, "r") as f:
+        with open(fpath, "r") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("*") or line.startswith("#"):

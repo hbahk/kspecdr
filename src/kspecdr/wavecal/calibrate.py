@@ -29,7 +29,6 @@ def calibrate_spectral_axes(
     flux_tab: np.ndarray,
     size_tab: int,
     maxshift: int,
-    args: dict,
 ) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.

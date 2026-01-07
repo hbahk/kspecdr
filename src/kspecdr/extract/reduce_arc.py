@@ -172,13 +172,18 @@ def reduce_arc(args: Dict[str, Any]) -> None:
             goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
 
             # Read Lamp List
-            lamp = red_file.get_header_value("LAMPNAME", "")
-            # Spector logic
-            if instrument_code == INST_SPECTOR_HECTOR:
-                lamp += "_spector"
+            lamp = args.get("LAMPNAME", "")
+            if not lamp:
+                lamp = red_file.get_header_value("LAMPNAME", "")
+                # Spector logic
+                if instrument_code == INST_SPECTOR_HECTOR:
+                    lamp += "_spector"
 
             # Read Arc File
-            wlist, ilist, _, listsize = read_arc_file(nx, xptr, lamp)
+            arc_dir = args.get("ARCDIR", None)
+            if not arc_dir:
+                arc_dir = Path(raw_filename).parent
+            wlist, ilist, _, listsize = read_arc_file(nx, xptr, lamp, arc_dir=arc_dir)
 
             if listsize == 0:
                 logger.error("No arc lines found. Aborting calibration.")
