@@ -17,6 +17,7 @@ Contents
    installation
    quickstart
    package_overview
+   reduction_steps
    examples/basic_usage
 
 Indices and tables
