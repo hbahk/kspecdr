@@ -187,7 +187,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
             # Call Calibration
             pixcal_dp, status = calibrate_spectral_axes(
                 nx, nf, spectra, variance, wave_axis, goodfib,
-                wlist, ilist, listsize, maxshift
+                wlist, ilist, listsize, maxshift, args
             )
 
             if status == 0:

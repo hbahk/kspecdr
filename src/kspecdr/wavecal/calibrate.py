@@ -12,7 +12,7 @@ from .crosscorr import crosscorr_analysis, generate_spectra_model
 
 logger = logging.getLogger(__name__)
 
-def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance: np.ndarray, pred_axis: np.ndarray, goodfib: np.ndarray, lamb_tab: np.ndarray, flux_tab: np.ndarray, size_tab: int, maxshift: int) -> tuple[np.ndarray, int]:
+def calibrate_spectral_axes(npix: int, nfib: int, spectra: np.ndarray, variance: np.ndarray, pred_axis: np.ndarray, goodfib: np.ndarray, lamb_tab: np.ndarray, flux_tab: np.ndarray, size_tab: int, maxshift: int, args: dict) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.
 
