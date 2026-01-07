@@ -73,8 +73,8 @@ def calibrate_spectral_axes(
     cen_axis = 0.5 * (pred_axis[:-1] + pred_axis[1:])
 
     # Process Arc List (Filter by range)
-    min_wave = pred_axis[0]
-    max_wave = pred_axis[-1]
+    min_wave = min(pred_axis)
+    max_wave = max(pred_axis)
 
     mask_tab = (lamb_tab >= min_wave) & (lamb_tab <= max_wave)
     muv = lamb_tab[mask_tab]
