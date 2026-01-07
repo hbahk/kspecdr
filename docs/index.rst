@@ -17,6 +17,7 @@ Contents
    installation
    quickstart
    package_overview
+   examples/basic_usage
 
 Indices and tables
 ==================
