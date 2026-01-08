@@ -10,6 +10,7 @@ import shutil
 import numpy as np
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from astropy.table import Table
 
 from ..io.image import ImageFile
 from ..preproc.make_im import make_im
@@ -152,7 +153,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 f"Instrument {instrument_code} not supported for new calibration method."
             )
 
-def reduce_arcs(args_list: List[Dict[str, Any]]) -> None:
+def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, diagnostic_dir: Optional[str] = None) -> None:
     """
     Reduces multiple arc frames together.
 
@@ -166,6 +167,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]]) -> None:
 
     all_x_pts = []
     all_y_pts = []
+    all_lamps = []
 
     # Store intermediate data to avoid re-reading
     frames_data = []
@@ -196,7 +198,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]]) -> None:
                 args["EXTRAC_FILENAME"] = ex_filename
 
         # Read Data
-        with ImageFile(ex_filename, mode="READONLY") as ex_file:
+        with ImageFile(ex_filename, mode="READ") as ex_file:
             nx, nf = ex_file.get_size()
             spectra = ex_file.read_image_data(nx, nf).T
 
@@ -294,6 +296,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]]) -> None:
             if len(x_pts) > 0:
                 all_x_pts.extend(x_pts)
                 all_y_pts.extend(y_pts)
+                all_lamps.extend([lamp] * len(x_pts))
 
             # Store data needed for application
             frames_data.append({
@@ -347,5 +350,23 @@ def reduce_arcs(args_list: List[Dict[str, Any]]) -> None:
             red_file.write_shifts_data(shifts)
 
             logger.info(f"Updated {red_filename} with global calibration.")
-
+    
+    # Write diagnostic file
+    if get_diagnostic:
+        if diagnostic_dir:
+            if not Path(diagnostic_dir).exists():
+                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+        
+            # identified arc lines in x_pts, y_pts, residuals, outliers, lamps as a table
+            diag = Table({"x_pts": all_x_pts, "y_pts": all_y_pts, "residuals": residuals, "outliers": outliers, "lamps": all_lamps})
+            diag.write(Path(diagnostic_dir) / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
+            logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'identified_arcs.dat'}")
+            
+            # global fit coefficients
+            diag = Table({"coeffs": coeffs})
+            diag.write(Path(diagnostic_dir) / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
+            logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'global_fit_coefficients.dat'}")
+        else:
+            return {"x_pts": all_x_pts, "y_pts": all_y_pts, "residuals": residuals, "outliers": outliers, "lamps": all_lamps, "coeffs": coeffs}
+        
     logger.info("Multi-arc reduction completed.")
