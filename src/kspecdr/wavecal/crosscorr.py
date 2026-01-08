@@ -6,6 +6,7 @@ import numpy as np
 import logging
 from scipy.optimize import minimize
 from scipy.interpolate import interp1d
+from astropy.io import fits
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,7 @@ def crosscorr_analysis(
     sigma_inpix: float,
     cen_axis: np.ndarray,
     maxshift: int,
+    diagnostic: bool = False,
 ) -> np.ndarray:
     """
     Main cross-correlation analysis routine.
@@ -281,6 +283,13 @@ def crosscorr_analysis(
     hw = max(5, npix // 128)
 
     crs_cgm = gen_cross_corr_gram(template_spectra, model_spectra, npix, hw, maxshift)
+
+    if diagnostic:
+        try:
+            fits.writeto("CrsCgm0.fits", crs_cgm, overwrite=True)
+            logger.info("Diagnostic output: CrsCgm0.fits")
+        except Exception as e:
+            logger.warning(f"Failed to write CrsCgm0.fits: {e}")
 
     # 4. Determine path
     nrows = 2 * maxshift + 1

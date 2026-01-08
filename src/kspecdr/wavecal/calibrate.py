@@ -36,6 +36,7 @@ def calibrate_spectral_axes(
     flux_tab: np.ndarray,
     size_tab: int,
     maxshift: int,
+    diagnostic: bool = False,
 ) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.
@@ -138,6 +139,9 @@ def calibrate_spectral_axes(
     # 3. Landmark Register
     lmr, nlm = landmark_register(spectra, npix, nfib, ~goodfib, ref_fib, ares, ztol)
 
+    if diagnostic:
+        np.savetxt("LANDMARK_REGISTER.txt", lmr, fmt="%.4f")
+
     # 4. Rebin Spectra (Synchronise)
     rebin_spectra = synchronise_signals(
         spectra, npix, nfib, ~goodfib, ref_fib, lmr, nlm
@@ -173,6 +177,13 @@ def calibrate_spectral_axes(
     template_mask = binary_dilation(template_mask, iterations=np_ext)
     template_spectra[template_mask] = 0.0
 
+    if diagnostic:
+        np.savetxt(
+            "TEMPLATE_SPECTRA.dat",
+            np.column_stack((cen_axis, template_spectra)),
+            fmt="%.4f",
+        )
+
     # 6. Cross Correlation
     fshiftv = crosscorr_analysis(
         template_spectra,
@@ -185,21 +196,10 @@ def calibrate_spectral_axes(
         sigma_inpix,
         cen_axis,
         maxshift,
+        diagnostic=diagnostic,
     )
 
     # Interpolate shifted axis
-    # shift_axis[i] = cen_axis[i + shift]
-    # We want to know: What is the wavelength at pixel i?
-    # cen_axis maps Pixel -> Wavelength (predicted)
-    # fshiftv says: Template(i) corresponds to Model(i - shift).
-    # So Template at i matches Wavelength at (i - shift).
-    # Corrected Wavelength(i) = cen_axis(i - shift)
-
-    # Actually, Fortran does:
-    # SHIFT_AXIS(I)=TRP(FLOAT(I)+FSHIFTV(I),NPIX,PV,CEN_AXIS)
-    # PV is pixel index 1..N. CEN_AXIS is Wavelength.
-    # So SHIFT_AXIS(i) = Interpolate CEN_AXIS at (i + shift).
-
     pixel_indices = np.arange(npix, dtype=float)
     shifted_indices = pixel_indices + fshiftv
 
@@ -213,12 +213,77 @@ def calibrate_spectral_axes(
     )
     shift_axis = f_interp(shifted_indices)
 
-    # 7. Identify Peaks in Template (Shifted)
-    # "Locate Associative Template Spectra Peaks"
-    # Find peaks in template near table lines (using shift_axis to map table lines to template pixels)
+    # 6.5 Quality Check (Step 6 in Fortran)
+    # Mask out table arc lines that correlate poorly
+    disp = (cen_axis[-1] - cen_axis[0]) / (npix - 1)
+    arcline_sigma = sigma_inpix * disp
 
+    model_spectra = generate_spectra_model(
+        muv, av, mask, m, arcline_sigma, cen_axis, npix
+    )
+
+    if diagnostic:
+        np.savetxt(
+            "MODEL_SPECTRA.dat",
+            np.column_stack((cen_axis, model_spectra)),
+            fmt="%.4f",
+        )
+
+    mask_badcorr = mask.copy()
+    hw = int(np.ceil(3.0 * sigma_inpix))
+
+    # Pre-calculate normalized model windows? Doing inside loop is fine.
+    for i in range(m):
+        if mask_badcorr[i]:
+            continue
+
+        # idx0 in model (cen_axis)
+        idx0 = np.searchsorted(cen_axis, muv[i])
+
+        # idx1 in template (shift_axis)
+        # Find index where shift_axis is closest to muv[i]
+        idx1 = np.searchsorted(shift_axis, muv[i])
+        idx1 = np.clip(idx1, 0, npix - 1)
+
+        # Bounds check for model window (idx0)
+        if idx0 - hw < 0 or idx0 + hw >= npix:
+            mask_badcorr[i] = True
+            continue
+
+        # Bounds check for template window (idx1)
+        if idx1 - hw < 0 or idx1 + hw >= npix:
+            mask_badcorr[i] = True
+            continue
+
+        win_model = model_spectra[idx0 - hw : idx0 + hw + 1]
+        if np.std(win_model) == 0:
+            mask_badcorr[i] = True
+            continue
+        m_n = (win_model - np.mean(win_model)) / np.std(win_model)
+
+        lmaxcor = -1.0
+
+        for loop in range(-2, 3):
+            idxl = idx1 + loop
+            if idxl - hw < 0 or idxl + hw >= npix:
+                continue
+
+            win_template = template_spectra[idxl - hw : idxl + hw + 1]
+            if np.std(win_template) == 0:
+                val = 0.0
+            else:
+                t_n = (win_template - np.mean(win_template)) / np.std(win_template)
+                val = np.dot(t_n, m_n) / (len(t_n) - 1)
+
+            if val > lmaxcor:
+                lmaxcor = val
+
+        if lmaxcor < 0.5:
+            mask_badcorr[i] = True
+
+    # 7. Identify Peaks in Template (Shifted)
     pix_newv = np.zeros(m)
-    mask2 = mask.copy()
+    mask2 = mask_badcorr.copy()  # Use the updated mask
 
     hw = int(np.ceil(3.0 * sigma_inpix))
 
@@ -226,15 +291,9 @@ def calibrate_spectral_axes(
         if mask2[i]:
             continue
 
-        # Find pixel corresponding to muv[i] in shifted template
-        # shift_axis maps Pixel -> Wavelength. We want Wavelength -> Pixel.
-        # Inverse interpolation
-
-        # Or find index where shift_axis is closest to muv[i]
         idx1 = np.searchsorted(shift_axis, muv[i])
         idx1 = np.clip(idx1, 0, npix - 1)
 
-        # Search window around idx1
         start = max(0, idx1 - hw)
         end = min(npix, idx1 + hw + 1)
 
@@ -249,12 +308,10 @@ def calibrate_spectral_axes(
 
         local_max_idx = np.argmax(window) + start
 
-        # Check valid peak (neighbors)
         if local_max_idx <= start or local_max_idx >= end - 1:
             mask2[i] = True
             continue
 
-        # Quadratic refinement
         y0 = template_spectra[local_max_idx - 1]
         y1 = template_spectra[local_max_idx]
         y2 = template_spectra[local_max_idx + 1]
@@ -269,7 +326,6 @@ def calibrate_spectral_axes(
         pix_newv[i] = pix_new
 
     # 8. Robust Cubic Fit (Pixel -> Wavelength)
-    # Points: (pix_newv[i], muv[i])
     valid = ~mask2
     if np.sum(valid) < 4:
         logger.warning("Not enough valid points for cubic fit.")
@@ -278,27 +334,42 @@ def calibrate_spectral_axes(
     x_pts = pix_newv[valid]
     y_pts = muv[valid]
 
-    # 0-based pixel edges?
-    # Fortran: PIXEL_EDGE_AXIS(I)=FLOAT(I)-1.0
-    pixel_edges = (
-        np.arange(npix + 1, dtype=float) - 0.5
-    )  # 0.5 shift to match pixel centers being integers?
-    # Wait. Fortran: Pixel centers are I=1..N. Edges I=1..N+1.
-    # Edges: 0.0, 1.0, ... N.0.
-    # Pixel 1 center: 0.5.
-    # In my logic above, I used pixel_indices = 0..N-1.
-    # If pix_new is in 0..N-1 frame.
-    # Edges should be -0.5, 0.5, ...
-
-    # Let's align with Fortran convention or keep consistent.
-    # If pix_newv is 0-based index.
-    # Edges of pixel 0 are -0.5 and 0.5.
-    pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
-
-    cal_axis = np.zeros(npix + 1)
-
+    # Initial Fit
     coeffs = robust_polyfit(x_pts, y_pts, 3)
+
+    # Residual Analysis & Outlier Rejection (Step 8)
+    y_fit = np.polyval(coeffs, x_pts)
+    residuals = np.abs(y_fit - y_pts)
+    med_res = np.median(residuals)
+    mad_res = np.median(np.abs(residuals - med_res))
+
+    outliers = residuals >= 3.0 * med_res
+    if np.any(outliers):
+        logger.info(f"Removing {np.sum(outliers)} outliers.")
+        x_clean = x_pts[~outliers]
+        y_clean = y_pts[~outliers]
+
+        if len(x_clean) < 4:
+            logger.warning("Too few points after outlier rejection.")
+            return np.zeros((npix + 1, nfib)), -1
+
+        coeffs = robust_polyfit(x_clean, y_clean, 3)
+    else:
+        x_clean = x_pts
+        y_clean = y_pts
+
+    pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
     cal_axis = np.polyval(coeffs, pixel_edges)
+
+    if diagnostic:
+        # Save calibrated spectra mapping
+        # Map pixel centers
+        cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
+        np.savetxt(
+            "CALIBRATED_SPECTRA.dat",
+            np.column_stack((cal_centers, template_spectra)),
+            fmt="%.4f",
+        )
 
     # 9. Synchronise Calibration
     # Map cal_axis (Ref) to all fibers
