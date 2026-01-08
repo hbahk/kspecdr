@@ -155,24 +155,25 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
 def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, diagnostic_dir: Optional[str] = None) -> None:
     """
-    Reduces multiple arc frames together.
+    Reduces multiple arc frames together by creating a combined landmark register
+    and fitting a global wavelength solution.
 
     1. Preprocesses all frames (make_im, make_ex).
-    2. Extracts landmarks from all frames.
-    3. Fits a global wavelength solution.
-    4. Applies the solution to all frames.
+    2. Identifies a common reference fiber across all frames.
+    3. Extracts landmarks from each frame using the common reference.
+    4. Merges landmarks and templates to form a master dataset.
+    5. Fits a global wavelength solution.
+    6. Applies the global solution to all frames using the combined landmarks.
     """
 
     logger.info(f"Starting multi-arc reduction for {len(args_list)} frames.")
 
-    all_x_pts = []
-    all_y_pts = []
-    all_lamps = []
+    # Container for frame-specific data
+    frames_metadata = []
 
-    # Store intermediate data to avoid re-reading
-    frames_data = []
+    # 1. Preprocessing and Common Reference Fiber Identification
+    all_goodfibs = []
 
-    # 1. Preprocess and Collect Points
     for args in args_list:
         raw_filename = args.get("RAW_FILENAME")
         if not raw_filename:
@@ -197,134 +198,213 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
                 ex_filename = im_filename.replace("_im.fits", "_ex.fits")
                 args["EXTRAC_FILENAME"] = ex_filename
 
-        # Read Data
+        # Store metadata
+        meta = {
+            "args": args,
+            "raw_filename": raw_filename,
+            "ex_filename": ex_filename,
+        }
+
+        # Read goodfibs for reference fiber logic
+        with ImageFile(ex_filename, mode="READ") as ex_file:
+            nx, nf = ex_file.get_size()
+            fiber_types, _ = ex_file.read_fiber_types(MAX__NFIBRES)
+            goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
+
+            meta["nx"] = nx
+            meta["nf"] = nf
+            meta["goodfib"] = goodfib
+            meta["instrument_code"] = ex_file.get_instrument_code()
+
+            # Lamp info
+            lamp = args.get("LAMPNAME", "")
+            if not lamp:
+                lamp = ex_file.get_header_value("LAMPNAME", "")
+            if meta["instrument_code"] == INST_SPECTOR_HECTOR:
+                 lamp += "_spector"
+            meta["lamp"] = lamp
+
+            # Wavelength Prediction (needed for line ID)
+            try:
+                wave_hdu = ex_file.hdul["WAVELA"]
+                wave_data = wave_hdu.data.T
+                # We need the prediction for the reference fiber, but we don't know it yet.
+                # Store full wave_data or read later? Reading later is safer but slower.
+                # Let's store just the data we need or keep file closed.
+                # Actually, we need to know the initial wavelength grid (cen_axis) for the template.
+                # We can assume all frames have similar grating settings.
+                # Let's just store the prediction for the middle fiber for now as a fallback?
+                # No, we'll read it again in Pass 2 once we have ref_fib.
+            except KeyError:
+                pass
+
+            all_goodfibs.append(goodfib)
+            frames_metadata.append(meta)
+
+    if not frames_metadata:
+        logger.error("No valid frames to process.")
+        return
+
+    # Determine Common Reference Fiber
+    # Intersection of goodfibs
+    # Note: different frames might have slightly different NF? Assuming same setup.
+    nf_min = min(f["nf"] for f in frames_metadata)
+    common_goodfib = np.ones(nf_min, dtype=bool)
+
+    for f in frames_metadata:
+        common_goodfib &= f["goodfib"][:nf_min]
+
+    master_ref_fib = find_reference_fiber(nf_min, common_goodfib)
+    if master_ref_fib == -1:
+        logger.error("No common reference fiber found across all frames.")
+        return
+
+    logger.info(f"Selected Master Reference Fiber: {master_ref_fib}")
+
+
+    # 2. Extract Landmarks & Accumulate Data
+    collected_lmrs = []
+    collected_templates = []
+    collected_muv = []
+    collected_av = []
+    sum_sigma = 0.0
+
+    # Store cen_axis from the first frame to use as the master axis
+    master_cen_axis = None
+    master_npix = frames_metadata[0]["nx"]
+
+    for frame in frames_metadata:
+        ex_filename = frame["ex_filename"]
+        args = frame["args"]
+        lamp = frame["lamp"]
+
         with ImageFile(ex_filename, mode="READ") as ex_file:
             nx, nf = ex_file.get_size()
             spectra = ex_file.read_image_data(nx, nf).T
 
-            fiber_types, _ = ex_file.read_fiber_types(MAX__NFIBRES)
-            goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
-
-            # Find Reference Fiber
-            ref_fib = find_reference_fiber(nf, goodfib)
-            if ref_fib == -1:
-                logger.error(f"No good fibers in {ex_filename}")
-                continue
-
-            # Read Wavelength/Axis info
+            # Read prediction
             try:
                 wave_hdu = ex_file.hdul["WAVELA"]
                 wave_data = wave_hdu.data.T
-                xptr = wave_data[:, ref_fib] # Use ref fiber's prediction
+                xptr = wave_data[:, master_ref_fib]
             except KeyError:
                 xptr = np.arange(nx, dtype=float)
 
-            # Edges
+            # Axis setup
             wave_axis = np.zeros(nx + 1)
             wave_axis[1:nx] = 0.5 * (xptr[:-1] + xptr[1:])
             wave_axis[0] = wave_axis[1] - (wave_axis[2] - wave_axis[1])
             wave_axis[nx] = wave_axis[nx - 1] + (wave_axis[nx - 1] - wave_axis[nx - 2])
             cen_axis = 0.5 * (wave_axis[:-1] + wave_axis[1:])
 
-            # Get Lamp info
-            lamp = args.get("LAMPNAME", "")
-            if not lamp:
-                lamp = ex_file.get_header_value("LAMPNAME", "")
+            if master_cen_axis is None:
+                master_cen_axis = cen_axis
+                master_npix = nx
 
-            instrument_code = ex_file.get_instrument_code()
-            if instrument_code == INST_SPECTOR_HECTOR:
-                 lamp += "_spector"
-
+            # Read Arc Lines for this lamp
             arc_dir = args.get("ARCDIR", None)
             if not arc_dir:
-                arc_dir = Path(raw_filename).parent
+                arc_dir = Path(frame["raw_filename"]).parent
 
             wlist, ilist, _, listsize = read_arc_file(nx, xptr, lamp, arc_dir=arc_dir)
-            if listsize == 0:
-                logger.warning(f"No arc lines for {raw_filename} (Lamp: {lamp}). Skipping.")
-                continue
+            if listsize > 0:
+                # Filter by range
+                min_wave = min(wave_axis)
+                max_wave = max(wave_axis)
+                mask_tab = (wlist >= min_wave) & (wlist <= max_wave)
+                collected_muv.append(wlist[mask_tab])
+                collected_av.append(ilist[mask_tab])
 
-            # Process Arc List (Filter by range)
-            min_wave = min(wave_axis)
-            max_wave = max(wave_axis)
-            mask_tab = (wlist >= min_wave) & (wlist <= max_wave)
-            muv = wlist[mask_tab]
-            av = ilist[mask_tab]
-
-            # Sort & Unique
-            idx = np.argsort(muv)
-            muv = muv[idx]
-            av = av[idx]
-            unique_mu, unique_idx = np.unique(muv, return_index=True)
-            muv = muv[unique_idx]
-            av = av[unique_idx]
-
-            # Mask blends logic
-            ref_signal = spectra[:, ref_fib]
-            ref_signal = np.nan_to_num(ref_signal)
-            _, _, sigma_inpix, _, _ = analyse_arc_signal(ref_signal)
-
-            disp = np.abs(cen_axis[-1] - cen_axis[0]) / (nx - 1)
-            arcline_sigma = sigma_inpix * disp
-
-            m = len(muv)
-            mask = np.zeros(m, dtype=bool)
-            diffs = np.diff(muv)
-            blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
-            for idx in blend_indices:
-                if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
-                    mask[idx] = True; mask[idx + 1] = True
-                elif av[idx] >= 10.0 * av[idx + 1]:
-                    mask[idx + 1] = True
-                else:
-                    mask[idx] = True
-
-            # Extract Template
+            # Extract Template (using master_ref_fib)
+            # This generates lmr relative to the master reference
             template_spectra, template_mask, lmr, sigma_inpix, nlm = extract_template_spectrum(
-                spectra, nf, nx, goodfib, ref_fib, cen_axis, diagnostic=False
+                spectra, nf, nx, frame["goodfib"], master_ref_fib, cen_axis, diagnostic=False
             )
 
-            # Identify Lines
-            maxshift = args.get("CRSCGMA_MS", 70)
-            x_pts, y_pts, _ = find_arc_line_matches(
-                template_spectra, template_mask, sigma_inpix, cen_axis, nx,
-                muv, av, mask, maxshift, diagnostic=False
-            )
+            # Accumulate
+            collected_lmrs.append(lmr) # (NF, NLM)
+            collected_templates.append(template_spectra)
+            sum_sigma += sigma_inpix
 
-            logger.info(f"Found {len(x_pts)} points in {raw_filename}")
+    # 3. Combine Data
+    # Combine LMRs horizontally: (NF, NLM1) + (NF, NLM2) -> (NF, NLM_Total)
+    if not collected_lmrs:
+        logger.error("No LMRs extracted.")
+        return
 
-            if len(x_pts) > 0:
-                all_x_pts.extend(x_pts)
-                all_y_pts.extend(y_pts)
-                all_lamps.extend([lamp] * len(x_pts))
+    master_lmr = np.hstack(collected_lmrs)
+    master_nlm = master_lmr.shape[1]
+    logger.info(f"Combined LMR shape: {master_lmr.shape}, Total Landmarks: {master_nlm}")
 
-            # Store data needed for application
-            frames_data.append({
-                "args": args,
-                "ex_filename": ex_filename,
-                "nx": nx, "nf": nf,
-                "goodfib": goodfib,
-                "ref_fib": ref_fib,
-                "lmr": lmr,
-                "nlm": nlm
-            })
+    # Combine Templates (Simple Sum)
+    # Assumes all templates are on the same pixel grid (aligned to master_ref_fib)
+    master_template = np.sum(collected_templates, axis=0)
+    master_template_mask = np.zeros_like(master_template, dtype=bool) # Re-calculate mask?
+    # Ideally, mask is where count is low. For now, assume good coverage.
 
-    # 2. Global Fit
-    logger.info(f"Total points collected: {len(all_x_pts)}")
-    if len(all_x_pts) < 4:
-        logger.error("Not enough points collected across all frames.")
+    # Combine Lamp Lines
+    if collected_muv:
+        all_muv = np.concatenate(collected_muv)
+        all_av = np.concatenate(collected_av)
+
+        # Sort & Unique
+        idx = np.argsort(all_muv)
+        all_muv = all_muv[idx]
+        all_av = all_av[idx]
+
+        # Remove duplicates (same line from same lamp in different frames, or overlapping lamps)
+        # We use a small tolerance or just unique values?
+        unique_mu, unique_idx = np.unique(all_muv, return_index=True)
+        master_muv = all_muv[unique_idx]
+        master_av = all_av[unique_idx]
+    else:
+        logger.error("No arc lines found in any frame.")
+        return
+
+    # Calculate blend mask for the master list
+    # Use average sigma
+    avg_sigma_inpix = sum_sigma / len(frames_metadata)
+    disp = np.abs(master_cen_axis[-1] - master_cen_axis[0]) / (master_npix - 1)
+    arcline_sigma = avg_sigma_inpix * disp
+
+    m = len(master_muv)
+    master_mask = np.zeros(m, dtype=bool)
+    diffs = np.diff(master_muv)
+    blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
+    for idx in blend_indices:
+        if master_av[idx] < 10.0 * master_av[idx + 1] and master_av[idx + 1] < 10.0 * master_av[idx]:
+            master_mask[idx] = True; master_mask[idx + 1] = True
+        elif master_av[idx] >= 10.0 * master_av[idx + 1]:
+            master_mask[idx + 1] = True
+        else:
+            master_mask[idx] = True
+
+    # 4. Identify Lines & Global Fit
+    maxshift = frames_metadata[0]["args"].get("CRSCGMA_MS", 70) # Use first frame's setting
+
+    x_pts, y_pts, _ = find_arc_line_matches(
+        master_template, master_template_mask, avg_sigma_inpix, master_cen_axis, master_npix,
+        master_muv, master_av, master_mask, maxshift, diagnostic=False
+    )
+
+    logger.info(f"Total points found on master template: {len(x_pts)}")
+
+    if len(x_pts) < 4:
+        logger.error("Not enough points found for global fit.")
         return
 
     coeffs, residuals, outliers = fit_calibration_model(
-        np.array(all_x_pts), np.array(all_y_pts), poly_order=3
+        np.array(x_pts), np.array(y_pts), poly_order=3
     )
 
     if len(residuals) > 0:
          rms_res = np.sqrt(np.mean(((residuals - np.median(residuals))**2)[~outliers]))
          logger.info(f"Global Fit RMS: {rms_res:.4f}")
 
-    # 3. Apply to All Frames
-    for frame in frames_data:
+    # 5. Apply Global Solution to All Frames
+    # Using Master LMR and Master Ref Fib
+
+    for frame in frames_metadata:
         args = frame["args"]
         ex_filename = frame["ex_filename"]
         red_filename = args.get("OUTPUT_FILENAME")
@@ -335,10 +415,13 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
         shutil.copy2(ex_filename, red_filename)
 
         with ImageFile(red_filename, mode="UPDATE") as red_file:
+            # Note: synchronise_calibration_last (called by apply) uses lmr to map
+            # the global solution (at master_ref_fib) to each individual fiber.
+            # By passing master_lmr, we use the combined set of landmarks for this mapping.
             pixcal_dp = apply_calibration_model(
                 coeffs, frame["nx"], frame["nf"],
-                frame["goodfib"], frame["ref_fib"],
-                frame["lmr"], frame["nlm"]
+                frame["goodfib"], master_ref_fib,
+                master_lmr, master_nlm
             )
 
             # Write results
@@ -357,8 +440,9 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
             if not Path(diagnostic_dir).exists():
                 Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
         
-            # identified arc lines in x_pts, y_pts, residuals, outliers, lamps as a table
-            diag = Table({"x_pts": all_x_pts, "y_pts": all_y_pts, "residuals": residuals, "outliers": outliers, "lamps": all_lamps})
+            # identified arc lines in x_pts, y_pts, residuals, outliers
+            # We don't have per-point lamps here easily unless we track them in find_arc_line_matches
+            diag = Table({"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers})
             diag.write(Path(diagnostic_dir) / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'identified_arcs.dat'}")
             
@@ -367,6 +451,6 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
             diag.write(Path(diagnostic_dir) / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'global_fit_coefficients.dat'}")
         else:
-            return {"x_pts": all_x_pts, "y_pts": all_y_pts, "residuals": residuals, "outliers": outliers, "lamps": all_lamps, "coeffs": coeffs}
+            return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs}
         
     logger.info("Multi-arc reduction completed.")
