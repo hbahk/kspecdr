@@ -25,117 +25,49 @@ if not logger.hasHandlers():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-def calibrate_spectral_axes(
-    npix: int,
-    nfib: int,
-    spectra: np.ndarray,
-    variance: np.ndarray,
-    pred_axis: np.ndarray,
-    goodfib: np.ndarray,
-    lamb_tab: np.ndarray,
-    flux_tab: np.ndarray,
-    size_tab: int,
-    maxshift: int,
-    diagnostic: bool = True,
-) -> tuple[np.ndarray, int]:
-    """
-    Calibrate the pixels of extracted arclamp spectra.
-
-    Returns
-    -------
-    pixcal_dp : np.ndarray
-        Calibrated pixels (NPIX+1, NFIB)
-    status : int
-        Status code (0 = OK)
-    """
-    # 1. Preamble & Ref Fibre
-    # Find middle good fibre
+def find_reference_fiber(nfib: int, goodfib: np.ndarray) -> int:
+    """Finds a suitable reference fiber (middlemost good fiber)."""
     ref_fib = nfib // 2
-    if not goodfib[ref_fib]:
-        # Search outwards
-        found = False
-        for step in range(1, nfib // 2 + 1):
-            if ref_fib + step < nfib and goodfib[ref_fib + step]:
-                ref_fib += step
-                found = True
-                break
-            if ref_fib - step >= 0 and goodfib[ref_fib - step]:
-                ref_fib -= step
-                found = True
-                break
-        if not found:
-            logger.error("No good fibres found.")
-            return np.zeros((npix + 1, nfib)), -1
+    if goodfib[ref_fib]:
+        return ref_fib
 
-    logger.info(f"Reference fibre: {ref_fib}")
+    # Search outwards
+    for step in range(1, nfib // 2 + 1):
+        if ref_fib + step < nfib and goodfib[ref_fib + step]:
+            return ref_fib + step
+        if ref_fib - step >= 0 and goodfib[ref_fib - step]:
+            return ref_fib - step
 
-    # Pixel centers
-    # pred_axis has NPIX+1 edges.
-    cen_axis = 0.5 * (pred_axis[:-1] + pred_axis[1:])
+    logger.error("No good fibres found.")
+    return -1
 
-    # Process Arc List (Filter by range)
-    min_wave = min(pred_axis)
-    max_wave = max(pred_axis)
+def extract_template_spectrum(
+    spectra: np.ndarray,
+    nfib: int,
+    npix: int,
+    goodfib: np.ndarray,
+    ref_fib: int,
+    cen_axis: np.ndarray,
+    diagnostic: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
+    """
+    Extracts a high S/N template spectrum by aligning and stacking fibers.
 
-    mask_tab = (lamb_tab >= min_wave) & (lamb_tab <= max_wave)
-    muv = lamb_tab[mask_tab]
-    av = flux_tab[mask_tab]
-    m = len(muv)
-
-    # Sort
-    idx = np.argsort(muv)
-    muv = muv[idx]
-    av = av[idx]
-
-    # Unique check (skip duplicates)
-    # Simple way: use unique
-    # But we want to keep associated AV.
-    # Fortran does O(N^2) check.
-    # Python:
-    unique_mu, unique_idx = np.unique(muv, return_index=True)
-    muv = muv[unique_idx]
-    av = av[unique_idx]
-    m = len(muv)
-    logger.info(f"Unique lines: {m}")
-
+    Returns:
+        template_spectra: 1D array
+        template_mask: 1D boolean array (True = masked/bad)
+        lmr: Landmark register array (shifts)
+        sigma_inpix: Estimated sigma in pixels
+        nlm: Number of landmarks found
+    """
     # 2. Statistical Analysis
     ref_signal = spectra[:, ref_fib]
-    # Replace NaNs
     ref_signal = np.nan_to_num(ref_signal)
 
     mn_noise, sd_noise, sigma_inpix, ares, ztol = analyse_arc_signal(ref_signal)
-
     logger.info(
         f"Sigma: {sigma_inpix:.2f} pix. Noise: Mean={mn_noise:.2f}, SD={sd_noise:.2f}"
     )
-
-    # 2.1 Mask blends
-    # Mask lines too close
-    disp = np.abs(cen_axis[-1] - cen_axis[0]) / (npix - 1)
-    arcline_sigma = sigma_inpix * disp
-
-    mask = np.zeros(m, dtype=bool)
-
-    # Vectorized blend check
-    # Check difference between adjacent lines
-    diffs = np.diff(muv)
-    # Indices where gap < 3*sigma
-    blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
-
-    for idx in blend_indices:
-        # Check fluxes. If one is dominant (>10x), keep it.
-        if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
-            mask[idx] = True
-            mask[idx + 1] = True  # Mask both? Fortran masks based on complex logic.
-            # "if one line of flux > 10.0 the others we assume that this profile is only effected by blending in a very small way"
-            # So if one is dominant, we keep it. If comparable, mask both?
-            # Fortran: IF ( ... AND AV(I) < 10.0*AV(IDX0) ) THEN MASK(I)=TRUE
-            # It removes the weaker one.
-            pass
-        elif av[idx] >= 10.0 * av[idx + 1]:
-            mask[idx + 1] = True
-        else:
-            mask[idx] = True
 
     # 3. Landmark Register
     lmr, nlm = landmark_register(spectra, npix, nfib, ~goodfib, ref_fib, ares, ztol)
@@ -150,32 +82,24 @@ def calibrate_spectral_axes(
     )
 
     # 5. Combine to Template
-    # Average good fibers
-    # Mask saturated pixels (counts > threshold or based on bad pixels)
-    # Fortran uses a count check.
-
     template_spectra = np.zeros(npix)
     template_mask = np.zeros(npix, dtype=bool)
-
-    # Simple average excluding zeros/nans
-    # rebin_spectra has 0.0 for bad values
 
     valid_counts = np.sum(rebin_spectra > 0, axis=1)
     sums = np.sum(rebin_spectra, axis=1)
 
-    # Threshold for validity: half of good fibers
-    # Fortran: IF (CNT<0.5*NGOODFIBS)
     ngoodfibs = np.sum(goodfib)
-
     valid_pixels = valid_counts >= 0.5 * ngoodfibs
-    template_spectra[valid_pixels] = sums[valid_pixels] / valid_counts[valid_pixels]
+
+    # Avoid division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        template_spectra[valid_pixels] = sums[valid_pixels] / valid_counts[valid_pixels]
+
     template_mask[~valid_pixels] = True
 
     # Extend mask
     np_ext = 7
-    # Binary dilation could work
     from scipy.ndimage import binary_dilation
-
     template_mask = binary_dilation(template_mask, iterations=np_ext)
     template_spectra[template_mask] = 0.0
 
@@ -185,6 +109,30 @@ def calibrate_spectral_axes(
             np.column_stack((cen_axis, template_spectra)),
             fmt="%.4f",
         )
+
+    return template_spectra, template_mask, lmr, sigma_inpix, nlm
+
+def find_arc_line_matches(
+    template_spectra: np.ndarray,
+    template_mask: np.ndarray,
+    sigma_inpix: float,
+    cen_axis: np.ndarray,
+    npix: int,
+    muv: np.ndarray,
+    av: np.ndarray,
+    mask: np.ndarray, # lamp lines mask
+    maxshift: int,
+    diagnostic: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Identifies arc lines in the template spectrum.
+
+    Returns:
+        valid_pixels: Measured pixel positions
+        valid_waves: True wavelengths
+        final_mask: Boolean mask of lamp lines (True = bad/unused)
+    """
+    m = len(muv)
 
     # 6. Cross Correlation
     fshiftv = crosscorr_analysis(
@@ -205,7 +153,6 @@ def calibrate_spectral_axes(
     pixel_indices = np.arange(npix, dtype=float)
     shifted_indices = pixel_indices + fshiftv
 
-    # Extrapolate/Interpolate
     f_interp = interp1d(
         pixel_indices,
         cen_axis,
@@ -215,8 +162,7 @@ def calibrate_spectral_axes(
     )
     shift_axis = f_interp(shifted_indices)
 
-    # 6.5 Quality Check (Step 6 in Fortran)
-    # Mask out table arc lines that correlate poorly
+    # 6.5 Quality Check
     disp = (cen_axis[-1] - cen_axis[0]) / (npix - 1)
     arcline_sigma = sigma_inpix * disp
 
@@ -234,25 +180,18 @@ def calibrate_spectral_axes(
     mask_badcorr = mask.copy()
     hw = int(np.ceil(3.0 * sigma_inpix))
 
-    # Pre-calculate normalized model windows? Doing inside loop is fine.
     for i in range(m):
         if mask_badcorr[i]:
             continue
 
-        # idx0 in model (cen_axis)
         idx0 = np.argmin(np.abs(cen_axis - muv[i]))
-
-        # idx1 in template (shift_axis)
-        # Find index where shift_axis is closest to muv[i]
         idx1 = np.argmin(np.abs(shift_axis - muv[i]))
         idx1 = np.clip(idx1, 0, npix - 1)
 
-        # Bounds check for model window (idx0)
         if idx0 - hw < 0 or idx0 + hw >= npix:
             mask_badcorr[i] = True
             continue
 
-        # Bounds check for template window (idx1)
         if idx1 - hw < 0 or idx1 + hw >= npix:
             mask_badcorr[i] = True
             continue
@@ -264,7 +203,6 @@ def calibrate_spectral_axes(
         m_n = (win_model - np.mean(win_model)) / np.std(win_model)
 
         lmaxcor = -1.0
-
         for loop in range(-2, 3):
             idxl = idx1 + loop
             if idxl - hw < 0 or idxl + hw >= npix:
@@ -285,9 +223,7 @@ def calibrate_spectral_axes(
 
     # 7. Identify Peaks in Template (Shifted)
     pix_newv = np.zeros(m)
-    mask2 = mask_badcorr.copy()  # Use the updated mask
-
-    hw = int(np.ceil(3.0 * sigma_inpix))
+    mask2 = mask_badcorr.copy()
 
     for i in range(m):
         if mask2[i]:
@@ -330,52 +266,176 @@ def calibrate_spectral_axes(
             continue
         pix_newv[i] = pix_new
 
-    # 8. Robust Cubic Fit (Pixel -> Wavelength)
     valid = ~mask2
-    if np.sum(valid) < 4:
-        logger.warning(f"Not enough valid points for cubic fit - {np.sum(valid)} points.")
-        return np.zeros((npix + 1, nfib)), -1
+    return pix_newv[valid], muv[valid], mask2
 
-    logger.info(f"Valid points: {np.sum(valid)}")
+def fit_calibration_model(
+    x_pts: np.ndarray,
+    y_pts: np.ndarray,
+    poly_order: int = 3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fits a robust polynomial to the points.
 
-    x_pts = pix_newv[valid]
-    y_pts = muv[valid]
+    Returns:
+        coeffs: Polynomial coefficients
+        residuals: Residuals of the fit
+        outliers: Boolean mask of outliers
+    """
+    if len(x_pts) < poly_order + 1:
+        logger.warning(f"Not enough points for fit: {len(x_pts)}")
+        return np.zeros(poly_order+1), np.array([]), np.array([])
 
     # Initial Fit
-    coeffs = robust_polyfit(x_pts, y_pts, 3)
+    coeffs = robust_polyfit(x_pts, y_pts, poly_order)
 
-    # Residual Analysis & Outlier Rejection (Step 8)
+    # Residual Analysis & Outlier Rejection
     y_fit = np.polyval(coeffs, x_pts)
-    # residuals = np.abs(y_fit - y_pts)
     residuals = y_fit - y_pts
     med_res = np.median(residuals)
     mad_res = np.median(np.abs(residuals - med_res))
-    logger.info(f"Median residual: {med_res:.4f}, MAD: {mad_res:.4f}")
 
     outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
-    rms_res = np.sqrt(np.mean(((residuals - med_res)**2)[~outliers]))
-    logger.info(f"RMS residual: {rms_res:.4f}")
     
     if np.any(outliers):
         logger.info(f"Removing {np.sum(outliers)} outliers.")
         x_clean = x_pts[~outliers]
         y_clean = y_pts[~outliers]
 
-        if len(x_clean) < 4:
+        if len(x_clean) < poly_order + 1:
             logger.warning("Too few points after outlier rejection.")
-            return np.zeros((npix + 1, nfib)), -1
+            return coeffs, residuals, outliers # Return initial fit if too few
 
-        coeffs = robust_polyfit(x_clean, y_clean, 3)
-    else:
-        x_clean = x_pts
-        y_clean = y_pts
+        coeffs = robust_polyfit(x_clean, y_clean, poly_order)
 
+    return coeffs, residuals, outliers
+
+def apply_calibration_model(
+    coeffs: np.ndarray,
+    npix: int,
+    nfib: int,
+    goodfib: np.ndarray,
+    ref_fib: int,
+    lmr: np.ndarray,
+    nlm: int
+) -> np.ndarray:
+    """
+    Propagates the master calibration to all fibers using landmark shifts.
+    Returns pixcal_dp (NPIX+1, NFIB).
+    """
     pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
     cal_axis = np.polyval(coeffs, pixel_edges)
 
+    # 9. Synchronise Calibration
+    synchcal_axes = synchronise_calibration_last(
+        cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm
+    )
+
+    return synchcal_axes.T
+
+def calibrate_spectral_axes(
+    npix: int,
+    nfib: int,
+    spectra: np.ndarray,
+    variance: np.ndarray,
+    pred_axis: np.ndarray,
+    goodfib: np.ndarray,
+    lamb_tab: np.ndarray,
+    flux_tab: np.ndarray,
+    size_tab: int,
+    maxshift: int,
+    diagnostic: bool = True,
+) -> tuple[np.ndarray, int]:
+    """
+    Calibrate the pixels of extracted arclamp spectra.
+
+    Returns
+    -------
+    pixcal_dp : np.ndarray
+        Calibrated pixels (NPIX+1, NFIB)
+    status : int
+        Status code (0 = OK)
+    """
+    # 1. Preamble & Ref Fibre
+    ref_fib = find_reference_fiber(nfib, goodfib)
+    if ref_fib == -1:
+        return np.zeros((npix + 1, nfib)), -1
+
+    logger.info(f"Reference fibre: {ref_fib}")
+
+    # Pixel centers
+    cen_axis = 0.5 * (pred_axis[:-1] + pred_axis[1:])
+
+    # Process Arc List (Filter by range)
+    min_wave = min(pred_axis)
+    max_wave = max(pred_axis)
+
+    mask_tab = (lamb_tab >= min_wave) & (lamb_tab <= max_wave)
+    muv = lamb_tab[mask_tab]
+    av = flux_tab[mask_tab]
+
+    # Sort
+    idx = np.argsort(muv)
+    muv = muv[idx]
+    av = av[idx]
+
+    # Unique check
+    unique_mu, unique_idx = np.unique(muv, return_index=True)
+    muv = muv[unique_idx]
+    av = av[unique_idx]
+    m = len(muv)
+    logger.info(f"Unique lines: {m}")
+
+    # Mask blends (2.1)
+    ref_signal = spectra[:, ref_fib]
+    ref_signal = np.nan_to_num(ref_signal)
+    _, _, sigma_inpix, _, _ = analyse_arc_signal(ref_signal)
+
+    disp = np.abs(cen_axis[-1] - cen_axis[0]) / (npix - 1)
+    arcline_sigma = sigma_inpix * disp
+
+    mask = np.zeros(m, dtype=bool)
+    diffs = np.diff(muv)
+    blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
+
+    for idx in blend_indices:
+        if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
+            mask[idx] = True
+            mask[idx + 1] = True
+        elif av[idx] >= 10.0 * av[idx + 1]:
+            mask[idx + 1] = True
+        else:
+            mask[idx] = True
+
+    # Extract Template
+    template_spectra, template_mask, lmr, sigma_inpix, nlm = extract_template_spectrum(
+        spectra, nfib, npix, goodfib, ref_fib, cen_axis, diagnostic
+    )
+
+    # Identify Arc Lines
+    x_pts, y_pts, _ = find_arc_line_matches(
+        template_spectra, template_mask, sigma_inpix, cen_axis, npix,
+        muv, av, mask, maxshift, diagnostic
+    )
+
+    logger.info(f"Valid points: {len(x_pts)}")
+    if len(x_pts) < 4:
+        logger.warning(f"Not enough valid points for cubic fit - {len(x_pts)} points.")
+        return np.zeros((npix + 1, nfib)), -1
+
+    # Fit Model
+    coeffs, residuals, outliers = fit_calibration_model(x_pts, y_pts, poly_order=3)
+
+    # Calculate stats for logging
+    if len(residuals) > 0:
+        med_res = np.median(residuals)
+        mad_res = np.median(np.abs(residuals - med_res))
+        logger.info(f"Median residual: {med_res:.4f}, MAD: {mad_res:.4f}")
+
+        rms_res = np.sqrt(np.mean(((residuals - med_res)**2)[~outliers]))
+        logger.info(f"RMS residual: {rms_res:.4f}")
+
     if diagnostic:
-        # Save calibrated spectra mapping
-        # Map pixel centers
         cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
         np.savetxt(
             "CALIBRATED_SPECTRA.dat",
@@ -383,15 +443,9 @@ def calibrate_spectral_axes(
             fmt="%.4f",
         )
 
-    # 9. Synchronise Calibration
-    # Map cal_axis (Ref) to all fibers
-    synchcal_axes = synchronise_calibration_last(
-        cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm
+    # Apply Calibration
+    pixcal_dp = apply_calibration_model(
+        coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm
     )
-
-    # Transpose for output (NPIX+1, NFIB) -> (NPIX+1, NFIB) ?
-    # Fortran: PIXCAL_DP(NPIX+1,NFIB) = TRANSPOSE(SYNCHCAL_AXES(NFIB,NPIX+1))
-    # My python synchcal_axes is (nfib, npix+1).
-    pixcal_dp = synchcal_axes.T
 
     return pixcal_dp, 0
