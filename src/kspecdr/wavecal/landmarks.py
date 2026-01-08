@@ -10,7 +10,11 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
 from sklearn.linear_model import LinearRegression
 
-from .wavelets import wavelet_convolution, wavelet_find_res_peaks_ztol
+from .wavelets import (
+    wavelet_convolution,
+    wavelet_find_res_peaks_ztol,
+    find_resonant_peaks2,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +86,7 @@ def landmark_register(
         if _ztol <= 0:
             _ztol = 0.1 * np.max(cwt)
 
-        pks = wavelet_find_res_peaks_ztol(cwt, t, _ztol)
+        pks = find_resonant_peaks2(cwt, t, _ztol)
         peaks_list.append(pks)
 
     # 2. Multi-Target Tracking (Simplified)
