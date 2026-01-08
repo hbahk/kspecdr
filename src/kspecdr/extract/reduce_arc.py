@@ -259,7 +259,6 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
                 # Write SHIFTS extension
                 red_file.write_shifts_data(shifts)
-                print("hey")
 
                 logger.info("Wavelength calibration completed successfully.")
 
