@@ -43,8 +43,9 @@ def generate_spectra_model(
 
     for mu, a in zip(mu_valid, a_valid):
         # Find range +/- 5 sigma
-        idx_min = np.searchsorted(t, mu - 5 * sig)
-        idx_max = np.searchsorted(t, mu + 5 * sig)
+        idx_min = np.argmin(np.abs(t - (mu - 5 * sig)))
+        idx_max = np.argmin(np.abs(t - (mu + 5 * sig)))
+        
 
         idx_min = max(0, idx_min)
         idx_max = min(n, idx_max)
