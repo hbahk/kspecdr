@@ -432,7 +432,7 @@ def calibrate_spectral_axes(
         mad_res = np.median(np.abs(residuals - med_res))
         logger.info(f"Median residual: {med_res:.4f}, MAD: {mad_res:.4f}")
 
-        rms_res = np.sqrt(np.mean(((residuals - med_res)**2)[~outliers]))
+        rms_res = np.sqrt(np.mean((residuals**2)[~outliers]))
         logger.info(f"RMS residual: {rms_res:.4f}")
 
     if diagnostic:

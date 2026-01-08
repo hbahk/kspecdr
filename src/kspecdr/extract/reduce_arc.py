@@ -420,7 +420,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
     )
 
     if len(residuals) > 0:
-         rms_res = np.sqrt(np.mean(((residuals - np.median(residuals))**2)[~outliers]))
+         rms_res = np.sqrt(np.mean((residuals**2)[~outliers]))
          logger.info(f"Global Fit RMS: {rms_res:.4f}")
 
     # 5. Apply Global Solution to All Frames
