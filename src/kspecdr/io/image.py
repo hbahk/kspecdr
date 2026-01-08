@@ -364,11 +364,19 @@ class ImageFile:
                 shifts_hdu = hdu
                 
         if shifts_hdu is None:
-            raise ValueError("No SHIFTS HDU found")
-        shifts_hdu.data = data
-        ny, nx = data.shape
-        shifts_hdu.header["NAXIS1"] = ny
-        shifts_hdu.header["NAXIS2"] = nx
+            # Create new SHIFTS HDU if it doesn't exist
+            from astropy.io import fits
+            ny, nx = data.shape
+            shifts_hdu = fits.ImageHDU(data=data, name="SHIFTS")
+            shifts_hdu.header["NAXIS1"] = ny
+            shifts_hdu.header["NAXIS2"] = nx
+            self.hdul.append(shifts_hdu)
+        else:
+            # Update existing HDU
+            shifts_hdu.data = data
+            ny, nx = data.shape
+            shifts_hdu.header["NAXIS1"] = ny
+            shifts_hdu.header["NAXIS2"] = nx
 
     def read_header_keyword(self, keyword: str) -> Tuple[str, str]:
         """
