@@ -95,6 +95,7 @@ def calibrate_spectral_axes(
     muv = muv[unique_idx]
     av = av[unique_idx]
     m = len(muv)
+    logger.info(f"Unique lines: {m}")
 
     # 2. Statistical Analysis
     ref_signal = spectra[:, ref_fib]
@@ -109,7 +110,7 @@ def calibrate_spectral_axes(
 
     # 2.1 Mask blends
     # Mask lines too close
-    disp = (cen_axis[-1] - cen_axis[0]) / (npix - 1)
+    disp = np.abs(cen_axis[-1] - cen_axis[0]) / (npix - 1)
     arcline_sigma = sigma_inpix * disp
 
     mask = np.zeros(m, dtype=bool)
@@ -119,6 +120,9 @@ def calibrate_spectral_axes(
     diffs = np.diff(muv)
     # Indices where gap < 3*sigma
     blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
+    logger.info(f"Blend indices: {blend_indices}")
+    logger.info(f"Blend diffs: {diffs[blend_indices]}")
+    logger.info(f"Blend arcline_sigma: {arcline_sigma}")
 
     for idx in blend_indices:
         # Check fluxes. If one is dominant (>10x), keep it.
@@ -137,6 +141,7 @@ def calibrate_spectral_axes(
 
     # 3. Landmark Register
     lmr, nlm = landmark_register(spectra, npix, nfib, ~goodfib, ref_fib, ares, ztol)
+    logger.info(f"Number of landmarks: {nlm}")
 
     # 4. Rebin Spectra (Synchronise)
     rebin_spectra = synchronise_signals(
@@ -231,7 +236,8 @@ def calibrate_spectral_axes(
         # Inverse interpolation
 
         # Or find index where shift_axis is closest to muv[i]
-        idx1 = np.searchsorted(shift_axis, muv[i])
+        # idx1 = np.searchsorted(shift_axis, muv[i])
+        idx1 = np.argmin(np.abs(shift_axis - muv[i]))
         idx1 = np.clip(idx1, 0, npix - 1)
 
         # Search window around idx1
@@ -266,14 +272,19 @@ def calibrate_spectral_axes(
 
         delta = 0.5 * (y0 - y2) / denom
         pix_new = local_max_idx + delta
+        if np.isnan(pix_new):
+            mask2[i] = True
+            continue
         pix_newv[i] = pix_new
 
     # 8. Robust Cubic Fit (Pixel -> Wavelength)
     # Points: (pix_newv[i], muv[i])
     valid = ~mask2
     if np.sum(valid) < 4:
-        logger.warning("Not enough valid points for cubic fit.")
+        logger.warning(f"Not enough valid points for cubic fit - {np.sum(valid)} points.")
         return np.zeros((npix + 1, nfib)), -1
+
+    logger.info(f"Valid points: {np.sum(valid)}")
 
     x_pts = pix_newv[valid]
     y_pts = muv[valid]
