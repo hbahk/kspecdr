@@ -224,8 +224,10 @@ def synchronise_signals(
         # We want to resample `spectra` (at coords `axis2`) onto the grid `axis1`.
         # So we interpolating (axis2, spectra) onto (axis1).
 
+        isfinite = np.isfinite(spectra[:, fib])
+
         f_interp = interp1d(
-            axis2, spectra[:, fib], kind="linear", bounds_error=False, fill_value=0.0
+            axis2[isfinite], spectra[:, fib][isfinite], kind="linear", bounds_error=False, fill_value=0.0
         )
         rebin_spectra[:, fib] = f_interp(axis1)
 

@@ -86,7 +86,7 @@ def extract_template_spectrum(
     template_mask = np.zeros(npix, dtype=bool)
 
     valid_counts = np.sum(rebin_spectra > 0, axis=1)
-    sums = np.sum(rebin_spectra, axis=1)
+    sums = np.nansum(rebin_spectra, axis=1)
 
     ngoodfibs = np.sum(goodfib)
     valid_pixels = valid_counts >= 0.5 * ngoodfibs
