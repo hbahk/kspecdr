@@ -267,6 +267,8 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
     collected_templates = []
     collected_muv = []
     collected_av = []
+    collected_lamp_indices = []  # Track which lamp each muv belongs to
+    lamp_list = []  # List of unique lamp names
     sum_sigma = 0.0
 
     # Store cen_axis from the first frame to use as the master axis
@@ -277,6 +279,11 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
         ex_filename = frame["ex_filename"]
         args = frame["args"]
         lamp = frame["lamp"]
+        
+        # Add to lamp_list (remove duplicates)
+        if lamp not in lamp_list:
+            lamp_list.append(lamp)
+        lamp_idx = lamp_list.index(lamp)
 
         with ImageFile(ex_filename, mode="READ") as ex_file:
             nx, nf = ex_file.get_size()
@@ -314,6 +321,8 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
                 mask_tab = (wlist >= min_wave) & (wlist <= max_wave)
                 collected_muv.append(wlist[mask_tab])
                 collected_av.append(ilist[mask_tab])
+                # Track which lamp each muv belongs to
+                collected_lamp_indices.append(np.full(np.sum(mask_tab), lamp_idx))
 
             # Extract Template (using master_ref_fib)
             # This generates lmr relative to the master reference
@@ -346,17 +355,20 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
     if collected_muv:
         all_muv = np.concatenate(collected_muv)
         all_av = np.concatenate(collected_av)
+        all_lamp_indices = np.concatenate(collected_lamp_indices)  # Lamp index for each muv
 
         # Sort & Unique
         idx = np.argsort(all_muv)
         all_muv = all_muv[idx]
         all_av = all_av[idx]
+        all_lamp_indices = all_lamp_indices[idx]  # Sorted lamp indices
 
         # Remove duplicates (same line from same lamp in different frames, or overlapping lamps)
         # We use a small tolerance or just unique values?
         unique_mu, unique_idx = np.unique(all_muv, return_index=True)
         master_muv = all_muv[unique_idx]
         master_av = all_av[unique_idx]
+        master_lamp_indices = all_lamp_indices[unique_idx]  # Lamp indices for unique muv
     else:
         logger.error("No arc lines found in any frame.")
         return
@@ -392,6 +404,16 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
     if len(x_pts) < 4:
         logger.error("Not enough points found for global fit.")
         return
+
+    # Find master_muv indices corresponding to each y_pts (wavelength) for lamp mapping
+    # y_pts are a subset of master_muv, so find the closest index
+    matched_indices = []
+    for y in y_pts:
+        idx = np.argmin(np.abs(master_muv - y))
+        matched_indices.append(idx)
+    
+    # Use matched_indices to find the lamp for each x_pts
+    lamps = [lamp_list[master_lamp_indices[i]] for i in matched_indices]
 
     coeffs, residuals, outliers = fit_calibration_model(
         np.array(x_pts), np.array(y_pts), poly_order=3
@@ -440,9 +462,14 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
             if not Path(diagnostic_dir).exists():
                 Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
         
-            # identified arc lines in x_pts, y_pts, residuals, outliers
-            # We don't have per-point lamps here easily unless we track them in find_arc_line_matches
-            diag = Table({"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers})
+            # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
+            diag = Table({
+                "x_pts": x_pts, 
+                "y_pts": y_pts, 
+                "residuals": residuals, 
+                "outliers": outliers,
+                "lamps": lamps
+            })
             diag.write(Path(diagnostic_dir) / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'identified_arcs.dat'}")
             
@@ -451,6 +478,6 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
             diag.write(Path(diagnostic_dir) / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'global_fit_coefficients.dat'}")
         else:
-            return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs}
+            return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs, "lamps": lamps}
         
     logger.info("Multi-arc reduction completed.")
