@@ -36,7 +36,7 @@ def calibrate_spectral_axes(
     flux_tab: np.ndarray,
     size_tab: int,
     maxshift: int,
-    diagnostic: bool = False,
+    diagnostic: bool = True,
 ) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.
@@ -121,9 +121,6 @@ def calibrate_spectral_axes(
     diffs = np.diff(muv)
     # Indices where gap < 3*sigma
     blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
-    logger.info(f"Blend indices: {blend_indices}")
-    logger.info(f"Blend diffs: {diffs[blend_indices]}")
-    logger.info(f"Blend arcline_sigma: {arcline_sigma}")
 
     for idx in blend_indices:
         # Check fluxes. If one is dominant (>10x), keep it.
@@ -349,11 +346,16 @@ def calibrate_spectral_axes(
 
     # Residual Analysis & Outlier Rejection (Step 8)
     y_fit = np.polyval(coeffs, x_pts)
-    residuals = np.abs(y_fit - y_pts)
+    # residuals = np.abs(y_fit - y_pts)
+    residuals = y_fit - y_pts
     med_res = np.median(residuals)
     mad_res = np.median(np.abs(residuals - med_res))
+    logger.info(f"Median residual: {med_res:.4f}, MAD: {mad_res:.4f}")
 
-    outliers = residuals >= 3.0 * med_res
+    outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
+    rms_res = np.sqrt(np.mean(((residuals - med_res)**2)[~outliers]))
+    logger.info(f"RMS residual: {rms_res:.4f}")
+    
     if np.any(outliers):
         logger.info(f"Removing {np.sum(outliers)} outliers.")
         x_clean = x_pts[~outliers]
