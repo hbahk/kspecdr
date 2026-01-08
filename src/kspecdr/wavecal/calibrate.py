@@ -243,11 +243,11 @@ def calibrate_spectral_axes(
             continue
 
         # idx0 in model (cen_axis)
-        idx0 = np.searchsorted(cen_axis, muv[i])
+        idx0 = np.argmin(np.abs(cen_axis - muv[i]))
 
         # idx1 in template (shift_axis)
         # Find index where shift_axis is closest to muv[i]
-        idx1 = np.searchsorted(shift_axis, muv[i])
+        idx1 = np.argmin(np.abs(shift_axis - muv[i]))
         idx1 = np.clip(idx1, 0, npix - 1)
 
         # Bounds check for model window (idx0)
@@ -296,12 +296,6 @@ def calibrate_spectral_axes(
         if mask2[i]:
             continue
 
-        # Find pixel corresponding to muv[i] in shifted template
-        # shift_axis maps Pixel -> Wavelength. We want Wavelength -> Pixel.
-        # Inverse interpolation
-
-        # Or find index where shift_axis is closest to muv[i]
-        # idx1 = np.searchsorted(shift_axis, muv[i])
         idx1 = np.argmin(np.abs(shift_axis - muv[i]))
         idx1 = np.clip(idx1, 0, npix - 1)
 
