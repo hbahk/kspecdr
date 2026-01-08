@@ -19,6 +19,7 @@ Contents
    package_overview
    reduction_steps
    examples/basic_usage
+   examples/wavecal_test
 
 Indices and tables
 ==================

@@ -125,7 +125,9 @@ reduce_args = {
     'TLMAP_FILENAME': 'science_tlm.fits', # Use science TLM or generate new
     'EXTRAC_FILENAME': 'arc_ex.fits',
     'OUTPUT_FILENAME': 'arc_red.fits',
-    'USE_GENCAL': True
+    'USE_GENCAL': True,
+    'ARCDIR': WD/"data"/"arc_tables",
+    'LAMPNAME': 'hgar',
 }
 
 reduce_arc(reduce_args)
