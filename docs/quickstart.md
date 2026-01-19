@@ -102,7 +102,7 @@ from kspecdr.extract import make_ex
 
 args = {
     'IMAGE_FILENAME': 'science_im.fits',
-    'TLMAP_FILENAME': 'science_tlm.fits',
+    'TLMAP_FILENAME': 'fflat_tlm.fits',
     'EXTRAC_FILENAME': 'science_ex.fits',
     'EXTR_OPERATION': 'SUM',  # Only SUM is fully supported currently
     'SUM_WIDTH': 5.0
@@ -122,7 +122,7 @@ from kspecdr.extract import reduce_arc
 reduce_args = {
     'RAW_FILENAME': 'arc_raw.fits',
     'IMAGE_FILENAME': 'arc_im.fits',
-    'TLMAP_FILENAME': 'science_tlm.fits', # Use science TLM or generate new
+    'TLMAP_FILENAME': 'fflat_tlm.fits',
     'EXTRAC_FILENAME': 'arc_ex.fits',
     'OUTPUT_FILENAME': 'arc_red.fits',
     'USE_GENCAL': True,
@@ -131,6 +131,56 @@ reduce_args = {
 }
 
 reduce_arc(reduce_args)
+```
+
+If you want to combine the results of multiple arc frames, you can use the `reduce_arcs` function.
+```python
+from kspecdr.extract import reduce_arcs
+
+arc_dir = "/data1/hbahk/kspec/kspecdr/data/arc_tables"
+
+hg_args = {
+    "RAW_FILENAME": "arc_hgar.fits",
+    "IMAGE_FILENAME": "arc_hgar_im.fits",
+    "TLMAP_FILENAME": "fflat_tlm.fits",
+    "EXTRAC_FILENAME": "arc_hgar_ex.fits",
+    "OUTPUT_FILENAME": "arc_hgar_red.fits",
+    "USE_GENCAL": True,
+    "ARCDIR": arc_dir,
+    "LAMPNAME": "hgar",
+}
+ne_args = {
+    "RAW_FILENAME": "arc_ne.fits",
+    "IMAGE_FILENAME": "arc_ne_im.fits",
+    "TLMAP_FILENAME": "fflat_tlm.fits",
+    "EXTRAC_FILENAME": "arc_ne_ex.fits",
+    "OUTPUT_FILENAME": "arc_ne_red.fits",
+    "USE_GENCAL": True,
+    "ARCDIR": arc_dir,
+    "LAMPNAME": "ne",
+}
+kr_args = {
+    "RAW_FILENAME": "arc_kr.fits",
+    "IMAGE_FILENAME": "arc_kr_im.fits",
+    "TLMAP_FILENAME": "fflat_tlm.fits",
+    "EXTRAC_FILENAME": "arc_kr_ex.fits",
+    "OUTPUT_FILENAME": "arc_kr_red.fits",
+    "USE_GENCAL": True,
+    "ARCDIR": arc_dir,
+    "LAMPNAME": "kr",
+}
+cd_args = {
+    "RAW_FILENAME": "arc_cd.fits",
+    "IMAGE_FILENAME": "arc_cd_im.fits",
+    "TLMAP_FILENAME": "fflat_tlm.fits",
+    "EXTRAC_FILENAME": "arc_cd_ex.fits",
+    "OUTPUT_FILENAME": "arc_cd_red.fits",
+    "USE_GENCAL": True,
+    "ARCDIR": arc_dir,
+    "LAMPNAME": "cd",
+}
+
+wavecal = reduce_arcs([hg_args, ne_args, kr_args, cd_args], get_diagnostic=True)
 ```
 
 ```{note}
