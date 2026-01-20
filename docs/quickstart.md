@@ -42,7 +42,8 @@ hdul.writeto("flat.fits", overwrite=True)
 Convert raw FITS files to `_im.fits` format, applying bias and dark subtraction if available.
 
 ```python
-from kspecdr.preproc import make_im, reduce_bias, reduce_dark
+from kspecdr.preproc.make_im import make_im
+from kspecdr.preproc.preproc import reduce_bias, reduce_dark
 
 # Reduce Bias Frames
 master_bias = reduce_bias(['bias1.fits', 'bias2.fits'], output_file='BIAScombined.fits')
