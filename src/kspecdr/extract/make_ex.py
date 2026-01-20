@@ -94,16 +94,14 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         im_class = im_file.get_header_value('CLASS', 'UNKNOWN')
         instrument_code = im_file.get_instrument_code()
 
-        nx_img, ny_img = im_file.get_size()
-
-        img_data = im_file.read_image_data(nx_img, ny_img)
-        var_data = im_file.read_variance_data(nx_img, ny_img)
+        img_data = im_file.read_image_data()
+        var_data = im_file.read_variance_data()
         fib_tabl = im_file.read_fiber_table()
 
         # 3. Read Tramline Map
         with ImageFile(tlm_fname, mode='READ') as tlm_file:
-            nx_tlm, nfib  = tlm_file.get_size()
-            tlm_data = tlm_file.read_image_data(nx_tlm, nfib)
+            tlm_data = tlm_file.read_image_data()
+            nspec_tlm, nfib = tlm_data.shape
 
             # Read fiber types
             fiber_types, _ = im_file.read_fiber_types(MAX_NFIBRES)
@@ -113,7 +111,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
             mwidth = float(tlm_file.get_header_value('MWIDTH', 5.0))
 
             # Read Wavelength data if available
-            wave_data = tlm_file.read_wave_data(nx_tlm, nfib)
+            wave_data = tlm_file.read_wave_data()
 
     # 4. Apply TLM Shift (Shift-Rotate-Tweak)
     tlm_shift = float(args.get('TLM_SHIFT', 0.0))
