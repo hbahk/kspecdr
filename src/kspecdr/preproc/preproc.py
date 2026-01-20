@@ -239,7 +239,7 @@ def reduce_bias(
 def reduce_dark(
     raw_files: List[str],
     output_file: str = "DARKcombined.fits",
-    bias_file: Optional[str] = None,
+    bias_filename: Optional[str] = None,
     **kwargs
 ) -> Union[str, List[str]]:
     """
@@ -251,7 +251,7 @@ def reduce_dark(
         List of raw dark filenames
     output_file : str
         Output master dark filename
-    bias_file : str, optional
+    bias_filename : str, optional
         Master bias file to subtract
         
     Returns
@@ -267,8 +267,8 @@ def reduce_dark(
         # Create IM file with bias subtraction if provided
         im_file = make_im(
             raw_filename=raw_file,
-            use_bias=(bias_file is not None),
-            bias_filename=bias_file,
+            use_bias=(bias_filename is not None),
+            bias_filename=bias_filename,
             use_dark=False,
             **kwargs
         )
@@ -334,8 +334,8 @@ def reduce_dark(
 def reduce_lflat(
     raw_files: List[str],
     output_file: str = "LFLATcombined.fits",
-    bias_file: Optional[str] = None,
-    dark_file: Optional[str] = None,
+    bias_filename: Optional[str] = None,
+    dark_filename: Optional[str] = None,
     **kwargs
 ) -> str:
     """
@@ -347,9 +347,9 @@ def reduce_lflat(
         List of raw lflat filenames
     output_file : str
         Output master lflat filename
-    bias_file : str, optional
+    bias_filename : str, optional
         Master bias file
-    dark_file : str, optional
+    dark_filename : str, optional
         Master dark file
         
     Returns
@@ -363,10 +363,10 @@ def reduce_lflat(
     for raw_file in raw_files:
         im_file = make_im(
             raw_filename=raw_file,
-            use_bias=(bias_file is not None),
-            bias_filename=bias_file,
-            use_dark=(dark_file is not None),
-            dark_filename=dark_file,
+            use_bias=(bias_filename is not None),
+            bias_filename=bias_filename,
+            use_dark=(dark_filename is not None),
+            dark_filename=dark_filename,
             **kwargs
         )
         im_files.append(im_file)
@@ -391,9 +391,9 @@ def reduce_lflat(
 def reduce_fflat(
     raw_files: List[str],
     output_file: str = "FFLATcombined.fits",
-    bias_file: Optional[str] = None,
-    dark_file: Optional[str] = None,
-    lflat_file: Optional[str] = None,
+    bias_filename: Optional[str] = None,
+    dark_filename: Optional[str] = None,
+    lflat_filename: Optional[str] = None,
     **kwargs
 ) -> str:
     """
@@ -409,11 +409,11 @@ def reduce_fflat(
         List of raw fflat filenames
     output_file : str
         Output combined fflat filename
-    bias_file : str, optional
+    bias_filename : str, optional
         Master bias file
-    dark_file : str, optional
+    dark_filename : str, optional
         Master dark file
-    lflat_file : str, optional
+    lflat_filename : str, optional
         Master lflat file
         
     Returns
@@ -427,12 +427,12 @@ def reduce_fflat(
     for raw_file in raw_files:
         im_file = make_im(
             raw_filename=raw_file,
-            use_bias=(bias_file is not None),
-            bias_filename=bias_file,
-            use_dark=(dark_file is not None),
-            dark_filename=dark_file,
-            use_lflat=(lflat_file is not None),
-            lflat_filename=lflat_file,
+            use_bias=(bias_filename is not None),
+            bias_filename=bias_filename,
+            use_dark=(dark_filename is not None),
+            dark_filename=dark_filename,
+            use_lflat=(lflat_filename is not None),
+            lflat_filename=lflat_filename,
             **kwargs
         )
         im_files.append(im_file)
@@ -453,9 +453,9 @@ def reduce_fflat(
 def reduce_arc(
     raw_files: List[str],
     output_file: str = "ARCcombined.fits",
-    bias_file: Optional[str] = None,
-    dark_file: Optional[str] = None,
-    lflat_file: Optional[str] = None,
+    bias_filename: Optional[str] = None,
+    dark_filename: Optional[str] = None,
+    lflat_filename: Optional[str] = None,
     **kwargs
 ) -> str:
     """
@@ -467,11 +467,11 @@ def reduce_arc(
         List of raw arc filenames
     output_file : str
         Output combined arc filename
-    bias_file : str, optional
+    bias_filename : str, optional
         Master bias file
-    dark_file : str, optional
+    dark_filename : str, optional
         Master dark file
-    lflat_file : str, optional
+    lflat_filename : str, optional
         Master lflat file
         
     Returns
@@ -485,12 +485,12 @@ def reduce_arc(
     for raw_file in raw_files:
         im_file = make_im(
             raw_filename=raw_file,
-            use_bias=(bias_file is not None),
-            bias_filename=bias_file,
-            use_dark=(dark_file is not None),
-            dark_filename=dark_file,
-            use_lflat=(lflat_file is not None),
-            lflat_filename=lflat_file,
+            use_bias=(bias_filename is not None),
+            bias_filename=bias_filename,
+            use_dark=(dark_filename is not None),
+            dark_filename=dark_filename,
+            use_lflat=(lflat_filename is not None),
+            lflat_filename=lflat_filename,
             **kwargs
         )
         im_files.append(im_file)
