@@ -83,7 +83,7 @@ im_file = make_im(
 Generate a tramline map (`_tlm.fits`) identifying fiber positions.
 
 ```python
-from kspecdr.tlm import make_tlm
+from kspecdr.tlm.make_tlm import make_tlm
 
 args = {
     'IMAGE_FILENAME': 'fflat_im.fits',
@@ -99,7 +99,7 @@ make_tlm(args)
 Extract spectra from the image using the tramline map.
 
 ```python
-from kspecdr.extract import make_ex
+from kspecdr.extract.make_ex import make_ex
 
 args = {
     'IMAGE_FILENAME': 'science_im.fits',
@@ -117,7 +117,7 @@ make_ex(args)
 Reduce an arc frame to determine the wavelength solution.
 
 ```python
-from kspecdr.extract import reduce_arc
+from kspecdr.extract.reduce_arc import reduce_arc
 
 # Assuming you have an extracted arc file or run full reduction
 reduce_args = {
@@ -136,7 +136,7 @@ reduce_arc(reduce_args)
 
 If you want to combine the results of multiple arc frames, you can use the `reduce_arcs` function.
 ```python
-from kspecdr.extract import reduce_arcs
+from kspecdr.extract.reduce_arc import reduce_arcs
 
 arc_dir = "/data1/hbahk/kspec/kspecdr/data/arc_tables"
 
