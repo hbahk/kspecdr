@@ -277,11 +277,12 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
         new_header["LAMBDAB"] = (lambdac_ang, "Compatibility keyword")
 
     # 8. Dispersion
-    reciprocal_linear_dispersion = 23.0 * (1200 / lines_per_mm) # Angstrom / mm, from the isoplane datasheet
-    pixel_width = float(new_header["PI CAMERA SENSOR INFORMATION PIXEL WIDTH"]) * 1e-3 # micron to mm # TODO: check - height or width? they are the same for PIXIS1300BX
-    dispersion = reciprocal_linear_dispersion * pixel_width # Angstrom / pixel
-    # new_header["DISPERS"] = (-dispersion, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
-    new_header["DISPERS"] = (-3.95, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
+    if match:
+        reciprocal_linear_dispersion = 23.0 * (1200 / lines_per_mm) # Angstrom / mm, from the isoplane datasheet
+        pixel_width = float(new_header["PI CAMERA SENSOR INFORMATION PIXEL WIDTH"]) * 1e-3 # micron to mm # TODO: check - height or width? they are the same for PIXIS1300BX
+        dispersion = reciprocal_linear_dispersion * pixel_width # Angstrom / pixel
+        new_header["DISPERS"] = (-dispersion, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
+    # new_header["DISPERS"] = (-3.95, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
 
     # 9. Spectrograph ID
     # Not strictly needed but good for completeness
