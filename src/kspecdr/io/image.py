@@ -8,9 +8,9 @@ Usage example:
 
     from kspecdr.io.image import ImageFile
     with ImageFile('myfile.fits') as im_file:
-        nx, ny = im_file.get_size()
-        img = im_file.read_image_data(nx, ny)
-        var = im_file.read_variance_data(nx, ny)
+        img = im_file.read_image_data()
+        n_rows, n_cols = img.shape
+        var = im_file.read_variance_data()
         fibre_types, nf = im_file.read_fiber_types(1000)
         value, comment = im_file.read_header_keyword('SPECTID')
         code = im_file.get_instrument_code()
@@ -98,12 +98,13 @@ class ImageFile:
 
     def get_size(self) -> Tuple[int, int]:
         """
-        Get the image dimensions.
+        Get the image dimensions (FITS convention).
 
         Returns
         -------
         tuple
-            (nx, ny) dimensions of the image
+            (nx, ny) dimensions of the image, where nx is width (NAXIS1) and ny is height (NAXIS2).
+            Note: This corresponds to a numpy array of shape (ny, nx).
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
@@ -117,21 +118,14 @@ class ImageFile:
 
         return self._nx, self._ny
 
-    def read_image_data(self, nx: int, ny: int) -> np.ndarray:
+    def read_image_data(self) -> np.ndarray:
         """
         Read image data from the primary HDU.
-
-        Parameters
-        ----------
-        nx : int
-            Expected x dimension
-        ny : int
-            Expected y dimension
 
         Returns
         -------
         np.ndarray
-            Image data array with shape (ny, nx)
+            Image data array with shape (rows, cols) [equivalent to (NAXIS2, NAXIS1)]
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
@@ -142,10 +136,6 @@ class ImageFile:
 
         # # Transpose to match Fortran convention (spectral, spatial)
         # data = data.T
-
-        # Check dimensions
-        if data.shape != (ny, nx):
-            logger.warning(f"Expected shape ({ny}, {nx}), got {data.shape}")
 
         return data.astype(np.float32)
 
@@ -206,21 +196,14 @@ class ImageFile:
         # Write to new file
         self.hdul[self.hdul.index_of("PRIMARY")].writeto(filename, overwrite=True)
 
-    def read_variance_data(self, nx: int, ny: int) -> np.ndarray:
+    def read_variance_data(self) -> np.ndarray:
         """
         Read variance data from the variance HDU.
-
-        Parameters
-        ----------
-        nx : int
-            Expected x dimension
-        ny : int
-            Expected y dimension
 
         Returns
         -------
         np.ndarray
-            Variance data array with shape (nx, ny)
+            Variance data array with shape (rows, cols)
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
@@ -235,35 +218,27 @@ class ImageFile:
         if var_hdu is None:
             # Create dummy variance data
             logger.warning("No variance HDU found, creating dummy variance")
+            nx, ny = self.get_size()
             return np.ones((ny, nx), dtype=np.float32)
 
         data = var_hdu.data
         if data is None:
+            nx, ny = self.get_size()
             return np.ones((ny, nx), dtype=np.float32)
 
         # # Transpose to match Fortran convention
         # data = data.T
 
-        if data.shape != (ny, nx):
-            logger.warning(f"Expected variance shape ({ny}, {nx}), got {data.shape}")
-
         return data.astype(np.float32)
 
-    def read_wave_data(self, nx: int, ny: int) -> Optional[np.ndarray]:
+    def read_wave_data(self) -> Optional[np.ndarray]:
         """
         Read wavelength data from the WAVELA HDU.
-
-        Parameters
-        ----------
-        nx : int
-            Expected x dimension
-        ny : int
-            Expected y dimension
 
         Returns
         -------
         np.ndarray or None
-            Wavelength data array with shape (ny, nx) if found, else None
+            Wavelength data array with shape (rows, cols) if found, else None
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
@@ -281,10 +256,6 @@ class ImageFile:
         data = wave_hdu.data
         if data is None:
             return None
-
-        # Check dimensions
-        if data.shape != (ny, nx):
-            logger.warning(f"Expected wavelength shape ({ny}, {nx}), got {data.shape}")
 
         return data.astype(np.float32)
 

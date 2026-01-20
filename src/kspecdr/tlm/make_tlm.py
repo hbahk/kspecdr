@@ -143,15 +143,17 @@ def make_tlm_other(
     logger.info(f"Fibres officially dead: {n_officially_dead}")
 
     # Step 4: Find fiber traces across the image
-    nx, ny = img_data.shape
+    # Note: For ISOPLANE, shape is (spectral, spatial) = (rows, cols)
+    nspec, nspat = img_data.shape
     max_ntraces = len(fibre_types)
     nf = len(fibre_types)
     logger.info(f"Max number of traces: {max_ntraces}")
+    logger.info(f"Image dimensions: nspec={nspec}, nspat={nspat}")
 
     ntraces, traces, spat_slice, pk_posn = detect_traces(
         img_data,
-        nx,
-        ny,
+        nspec,
+        nspat,
         max_ntraces,
         nf,
         order,
@@ -212,9 +214,8 @@ def read_instrument_data(
     tuple
         (img_data, var_data, fibre_types)
     """
-    nx, ny = im_file.get_size()
-    img_data = im_file.read_image_data(nx, ny)
-    var_data = im_file.read_variance_data(nx, ny)
+    img_data = im_file.read_image_data()
+    var_data = im_file.read_variance_data()
     fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES)
     return img_data, var_data, fibre_types
 
@@ -334,8 +335,8 @@ def convert_fibre_types_to_trace_status(
 
 def detect_traces(
     img_data: np.ndarray,
-    nx: int,
-    ny: int,
+    nspec: int,
+    nspat: int,
     max_ntraces: int,
     nf: int,
     order: int = 4,
@@ -347,7 +348,7 @@ def detect_traces(
     """
     Detect fiber traces across an image.
 
-    This function examines IMG_DATA(NX,NY) for identifiable fibre traces and creates
+    This function examines IMG_DATA(NSPEC, NSPAT) for identifiable fibre traces and creates
     a traces pathlist array. It returns a representation of a spatial profile slice
     and peak list that can be used for other analysis.
 
@@ -356,9 +357,9 @@ def detect_traces(
     Parameters
     ----------
     img_data : np.ndarray
-        Image data of shape (nx, ny)
-    nx, ny : int
-        Dimensions of the image
+        Image data of shape (nspec, nspat)
+    nspec, nspat : int
+        Dimensions of the image (spectral, spatial)
     max_ntraces : int
         Maximum number of traces to return
     nf : int
@@ -381,11 +382,11 @@ def detect_traces(
         ntraces : int
             Number of traces found
         tracea : np.ndarray
-            Trace array of shape (nx, max_ntraces)
+            Trace array of shape (nspec, max_ntraces)
         rep_slice : np.ndarray
-            Representation profile slice of shape (ny,)
+            Representation profile slice of shape (nspat,)
         rep_pkpos : np.ndarray
-            Representation slice peak list of shape (ny,)
+            Representation slice peak list of shape (nspat,)
     """
 
     # Heuristic parameters (from Fortran code)
@@ -394,12 +395,12 @@ def detect_traces(
     MAXD = 4.0  # Maximum displacement expected for fiber traces
 
     # Initialize arrays
-    tracea = np.zeros((nx, max_ntraces))
-    rep_slice = np.zeros(ny)
-    rep_pkpos = np.zeros(ny)
+    tracea = np.zeros((nspec, max_ntraces))
+    rep_slice = np.zeros(nspat)
+    rep_pkpos = np.zeros(nspat)
 
     # Calculate number of steps
-    nsteps = (nx - 1) // STEP + 1
+    nsteps = (nspec - 1) // STEP + 1
 
     # Arrays to store peak information
     pk_grid = np.zeros((nsteps, max_ntraces))
@@ -409,25 +410,25 @@ def detect_traces(
     logger.info("Sweeping image for signs of fibre traces...")
 
     # Vectorized column processing
-    col_indices = np.arange(0, nx, STEP)
-    if col_indices[-1] >= nx:
+    col_indices = np.arange(0, nspec, STEP)
+    if col_indices[-1] >= nspec:
         col_indices = col_indices[:-1]
 
     for stepno, colno in enumerate(col_indices):
         # Progress feedback
-        perc = float(colno) / float(nx) * 100.0
-        logger.info(f"Processing column {colno}/{nx} ({perc:.1f}%)")
+        perc = float(colno) / float(nspec) * 100.0
+        logger.info(f"Processing column {colno}/{nspec} ({perc:.1f}%)")
 
         # Create a vector slice by averaging around column colno (vectorized)
         col_start = max(0, colno - HWID)
-        col_end = min(nx, colno + HWID + 1)
+        col_end = min(nspec, colno + HWID + 1)
 
         # Extract column range and average
         col_range = img_data[col_start:col_end, :]
         valid_mask = ~np.isnan(col_range)
 
         # Compute average along column axis, handling NaN values
-        col_data = np.zeros(ny)
+        col_data = np.zeros(nspat)
         ngood = np.sum(valid_mask, axis=0)
         valid_cols = ngood > 0
 
@@ -517,7 +518,7 @@ def detect_traces(
     # Step 3: Interpolate across linked points of each identified trace
     logger.info("Interpolating trace paths...")
 
-    x_fit = np.arange(1, nx + 1) - 0.5
+    x_fit = np.arange(1, nspec + 1) - 0.5
 
     for idx in range(ntraces):
         # Get valid points for this trace
@@ -525,7 +526,7 @@ def detect_traces(
         if not np.any(valid_mask):
             continue
 
-        x_valid = np.arange(1, nx + 1, STEP)[valid_mask] - 0.5
+        x_valid = np.arange(1, nspec + 1, STEP)[valid_mask] - 0.5
         y_valid = trace_pts[idx, valid_mask]
 
         if len(x_valid) < 3:
@@ -987,19 +988,19 @@ def predict_wavelength(
         Wavelength array
     """
     logger.info("Predicting wavelength data")
-    nx, nf = tramline_map.shape
+    nspec, nf = tramline_map.shape
     instrument_code = im_file.get_instrument_code()
     if instrument_code == INST_TAIPAN:
-        return predict_wavelength_taipan(im_file, nx, nf)
+        return predict_wavelength_taipan(im_file, nspec, nf)
     elif instrument_code == INST_ISOPLANE:
-        return predict_wavelength_from_dispersion(im_file, nx, nf)
+        return predict_wavelength_from_dispersion(im_file, nspec, nf)
     raise NotImplementedError(
         f"Wavelength prediction for instrument code {instrument_code} not yet implemented. "
         "This should implement the PREDICT_WAVELEN functionality from the Fortran code."
     )
 
 
-def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarray:
+def predict_wavelength_taipan(im_file: ImageFile, nspec: int, nf: int) -> np.ndarray:
     """
     Predict wavelength for TAIPAN instrument (Fortran WLA_TAIPAN equivalent).
     Reads LAMBDAC and DISPERS from FITS header and computes wavelength for each pixel/fibre.
@@ -1012,9 +1013,9 @@ def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarra
     except Exception as e:
         logger.error(f"Error reading LAMBDAC or DISPERS from header: {e}")
         raise
-    midpix = 0.5 * nx
-    wavelength_data = np.zeros((nx, nf), dtype=np.float32)
-    for pix in range(nx):
+    midpix = 0.5 * nspec
+    wavelength_data = np.zeros((nspec, nf), dtype=np.float32)
+    for pix in range(nspec):
         t = float(pix + 1) - 0.5  # Fortran 1-based index
         dist_from_midpix = t - midpix
         lam = dispers * (dist_from_midpix) + lambdac
@@ -1025,7 +1026,7 @@ def predict_wavelength_taipan(im_file: ImageFile, nx: int, nf: int) -> np.ndarra
 
 
 def predict_wavelength_from_dispersion(
-    im_file: ImageFile, nx: int, nf: int
+    im_file: ImageFile, nspec: int, nf: int
 ) -> np.ndarray:
     """
     Predict wavelength from dispersion and central wavelength in the header.
@@ -1034,7 +1035,7 @@ def predict_wavelength_from_dispersion(
     ----------
     im_file : ImageFile
         Image file handler
-    nx : int
+    nspec : int
         Number of pixels in the dispersion direction
     nf : int
         Number of fibres
@@ -1044,7 +1045,7 @@ def predict_wavelength_from_dispersion(
     np.ndarray
         Wavelength array
     """
-    midpix = 0.5 * nx
+    midpix = 0.5 * nspec
     try:
         dispers_str, _ = im_file.read_header_keyword("DISPERS")
         lambdac_str, _ = im_file.read_header_keyword("LAMBDAC")
@@ -1053,9 +1054,9 @@ def predict_wavelength_from_dispersion(
     except Exception as e:
         logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
         raise
-    dist_from_midpix = np.linspace(0.5, nx + 0.5, nx) - midpix
+    dist_from_midpix = np.linspace(0.5, nspec + 0.5, nspec) - midpix
     wavevec = lambdac + dispers * dist_from_midpix # Angstroms
-    wavelength_data = wavevec.reshape(nx, 1).repeat(nf, axis=1)
+    wavelength_data = wavevec.reshape(nspec, 1).repeat(nf, axis=1)
 
     return wavelength_data
 
