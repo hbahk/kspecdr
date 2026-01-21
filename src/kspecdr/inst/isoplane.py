@@ -297,4 +297,8 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
         
     new_header["NDFCLASS"] = (ndfclass, "Data Reduction class name (NDFCLASS)")
 
+    # 11. Dispersion Axis
+    # 1 = Horizontal (L-R), 2 = Vertical (T-B)
+    new_header["DISPAXIS"] = (1, "Dispersion axis (1=Horizontal, 2=Vertical)")
+
     return new_header
