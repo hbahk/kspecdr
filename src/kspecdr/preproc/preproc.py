@@ -74,16 +74,17 @@ def combine_image(
         
     # Initialize arrays
     n_files = len(input_files)
-    stack_data = np.zeros((n_files, nx, ny), dtype=np.float32)
-    stack_var = np.zeros((n_files, nx, ny), dtype=np.float32)
+    # Using (ny, nx) to match read_image_data output shape (rows, cols)
+    stack_data = np.zeros((n_files, ny, nx), dtype=np.float32)
+    stack_var = np.zeros((n_files, ny, nx), dtype=np.float32)
     scales = np.ones(n_files)
     
     # Read all files
     for i, fname in enumerate(input_files):
         logger.info(f"Reading {fname} ({i+1}/{n_files})")
         with ImageFile(fname) as im_file:
-            data = im_file.read_image_data(nx, ny)
-            var = im_file.read_variance_data(nx, ny)
+            data = im_file.read_image_data()
+            var = im_file.read_variance_data()
             
             stack_data[i, :, :] = data
             stack_var[i, :, :] = var
@@ -91,9 +92,11 @@ def combine_image(
             # Calculate scaling if requested (using median of central region)
             if adjust_levels:
                 # Use central 50% of image for stats
-                x1, x2 = nx // 4, 3 * nx // 4
-                y1, y2 = ny // 4, 3 * ny // 4
-                med_val = np.nanmedian(data[x1:x2, y1:y2])
+                # data shape is (rows, cols) -> (ny, nx)
+                # So we slice [y1:y2, x1:x2]
+                row1, row2 = ny // 4, 3 * ny // 4
+                col1, col2 = nx // 4, 3 * nx // 4
+                med_val = np.nanmedian(data[row1:row2, col1:col2])
                 if med_val > 0:
                     scales[i] = med_val
                 else:
