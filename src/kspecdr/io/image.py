@@ -127,8 +127,15 @@ class ImageFile:
         if data is None:
             raise ValueError("No image data found in primary HDU")
 
-        # # Transpose to match Fortran convention (spectral, spatial)
-        # data = data.T
+        # Check DISPAXIS
+        # 1 = Horizontal (NAXIS1=Spectral), 2 = Vertical (NAXIS2=Spectral)
+        dispaxis = int(self.get_header_value("DISPAXIS", 1))
+
+        if dispaxis == 2:
+            # Vertical dispersion (Spectral is rows/axis0)
+            # Transpose to standardize on Horizontal (Spectral is cols/axis1)
+            # Input: (Spectral, Spatial) -> Output: (Spatial, Spectral)
+            data = data.T
 
         return data.astype(np.float32)
 
@@ -145,17 +152,16 @@ class ImageFile:
         if self.hdul is None:
             raise RuntimeError("File not opened")
 
-        # Transpose to match Fortran convention (spectral, spatial)
-        data = data.T
-
-        # Write data to primary HDU
+        # Write data to primary HDU (Assuming data is Spatial, Spectral)
+        # FITS Standard: NAXIS1=Spectral, NAXIS2=Spatial
         self.hdul[0].data = data
 
-        nx, ny = data.shape
+        ny, nx = data.shape
 
         # Update header with new dimensions
         self.hdul[0].header["NAXIS1"] = nx
         self.hdul[0].header["NAXIS2"] = ny
+        self.hdul[0].header["DISPAXIS"] = 1
 
         # Write to file
         self.hdul.writeto(self.filename, overwrite=True)
@@ -219,8 +225,11 @@ class ImageFile:
             nx, ny = self.get_size()
             return np.ones((ny, nx), dtype=np.float32)
 
-        # # Transpose to match Fortran convention
-        # data = data.T
+        # Check DISPAXIS
+        dispaxis = int(self.get_header_value("DISPAXIS", 1))
+
+        if dispaxis == 2:
+            data = data.T
 
         return data.astype(np.float32)
 
@@ -250,6 +259,12 @@ class ImageFile:
         if data is None:
             return None
 
+        # Check DISPAXIS
+        dispaxis = int(self.get_header_value("DISPAXIS", 1))
+
+        if dispaxis == 2:
+            data = data.T
+
         return data.astype(np.float32)
 
     def write_wave_data(self, data: np.ndarray) -> None:
@@ -274,8 +289,8 @@ class ImageFile:
 
         wave_hdu.data = data
         ny, nx = data.shape
-        wave_hdu.header["NAXIS1"] = ny
-        wave_hdu.header["NAXIS2"] = nx
+        wave_hdu.header["NAXIS1"] = nx
+        wave_hdu.header["NAXIS2"] = ny
 
     def write_variance_data(self, data: np.ndarray) -> None:
         """
@@ -288,9 +303,6 @@ class ImageFile:
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
-
-        # Transpose to match FITS convention
-        data = data.T
 
         # Find variance HDU
         variance_hdu = None
@@ -308,8 +320,8 @@ class ImageFile:
         ny, nx = data.shape
 
         # Update header with new dimensions
-        variance_hdu.header["NAXIS1"] = ny
-        variance_hdu.header["NAXIS2"] = nx
+        variance_hdu.header["NAXIS1"] = nx
+        variance_hdu.header["NAXIS2"] = ny
 
     def write_shifts_data(self, data: np.ndarray) -> None:
         """

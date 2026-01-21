@@ -95,7 +95,8 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         # 3. Read Tramline Map
         with ImageFile(tlm_fname, mode='READ') as tlm_file:
             tlm_data = tlm_file.read_image_data()
-            nspec_tlm, nfib = tlm_data.shape
+            # TLM is (NFIB, NSPEC) - Horizontal
+            nfib, nspec_tlm = tlm_data.shape
 
             # Read fiber types
             fiber_types, _ = im_file.read_fiber_types(MAX_NFIBRES)
@@ -120,8 +121,8 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         # TODO: implement scattered light subtraction
         logger.warning(f"Scattered light subtraction '{scatsub}' requested but not implemented yet.")
 
-    # 6. Transpose Data for Extraction Routines
-    nspec, nspat = img_data.shape
+    # 6. Standardize dimensions
+    nspat, nspec = img_data.shape
 
     tlm_data_T = tlm_data.T # Now (NSPEC, NFIB)
 
@@ -243,13 +244,13 @@ def sum_extract(
     Parameters
     ----------
     nspat : int
-        Number of spatial pixels (cols in indat)
+        Number of spatial pixels (rows in indat)
     nspec : int
-        Number of spectral pixels (rows in indat)
+        Number of spectral pixels (cols in indat)
     indat : np.ndarray
-        Input image (NSPEC, NSPAT)
+        Input image (NSPAT, NSPEC) - Horizontal Dispersion
     invar : np.ndarray
-        Input variance (NSPEC, NSPAT)
+        Input variance (NSPAT, NSPEC) - Horizontal Dispersion
     outdat : np.ndarray
         Output spectra (NSPEC, NFIB) - Updated in place
     outvar : np.ndarray
@@ -385,8 +386,8 @@ def sum_extract(
                 if overlap_max > overlap_min:
                     fraction = overlap_max - overlap_min
 
-                    val = indat[j, pix]
-                    var = invar[j, pix]
+                    val = indat[pix, j]
+                    var = invar[pix, j]
 
                     if np.isnan(val) or np.isnan(var):
                         bad_pixel = True

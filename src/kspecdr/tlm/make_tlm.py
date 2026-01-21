@@ -137,8 +137,8 @@ def make_tlm_other(
     logger.info(f"Fibres officially dead: {n_officially_dead}")
 
     # Step 4: Find fiber traces across the image
-    # Note: For ISOPLANE, shape is (spectral, spatial) = (rows, cols)
-    nspec, nspat = img_data.shape
+    # Standardized to Horizontal Dispersion: (Spatial, Spectral) = (rows, cols)
+    nspat, nspec = img_data.shape
     max_ntraces = len(fibre_types)
     nf = len(fibre_types)
     logger.info(f"Max number of traces: {max_ntraces}")
@@ -342,7 +342,7 @@ def detect_traces(
     """
     Detect fiber traces across an image.
 
-    This function examines IMG_DATA(NSPEC, NSPAT) for identifiable fibre traces and creates
+    This function examines IMG_DATA(NSPAT, NSPEC) for identifiable fibre traces and creates
     a traces pathlist array. It returns a representation of a spatial profile slice
     and peak list that can be used for other analysis.
 
@@ -351,7 +351,7 @@ def detect_traces(
     Parameters
     ----------
     img_data : np.ndarray
-        Image data of shape (nspec, nspat)
+        Image data of shape (nspat, nspec) - Horizontal Dispersion
     nspec, nspat : int
         Dimensions of the image (spectral, spatial)
     max_ntraces : int
@@ -418,17 +418,18 @@ def detect_traces(
         col_end = min(nspec, colno + HWID + 1)
 
         # Extract column range and average
-        col_range = img_data[col_start:col_end, :]
+        # Horizontal Dispersion: Slice along spectral axis (columns, axis=1)
+        col_range = img_data[:, col_start:col_end]
         valid_mask = ~np.isnan(col_range)
 
-        # Compute average along column axis, handling NaN values
+        # Compute average along spectral axis (axis=1), handling NaN values
         col_data = np.zeros(nspat)
-        ngood = np.sum(valid_mask, axis=0)
+        ngood = np.sum(valid_mask, axis=1)
         valid_cols = ngood > 0
 
         if np.any(valid_cols):
             col_data[valid_cols] = (
-                np.nansum(col_range[:, valid_cols], axis=0) / ngood[valid_cols]
+                np.nansum(col_range[valid_cols, :], axis=1) / ngood[valid_cols]
             )
 
         # Locate fiber peaks in this slice
