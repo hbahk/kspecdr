@@ -91,8 +91,8 @@ def reduce_arc(args: Dict[str, Any]) -> None:
             logger.info("Using Generic/TAIPAN Calibration Method")
 
             nx, nf = red_file.get_size()
-            spectra = red_file.read_image_data(nx, nf).T
-            variance = red_file.read_variance_data(nx, nf).T
+            spectra = red_file.read_image_data().T
+            variance = red_file.read_variance_data().T
 
             try:
                 wave_hdu = red_file.hdul["WAVELA"]
@@ -287,7 +287,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
 
         with ImageFile(ex_filename, mode="READ") as ex_file:
             nx, nf = ex_file.get_size()
-            spectra = ex_file.read_image_data(nx, nf).T
+            spectra = ex_file.read_image_data().T
 
             # Read prediction
             try:
