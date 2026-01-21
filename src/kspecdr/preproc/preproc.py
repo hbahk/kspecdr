@@ -24,6 +24,7 @@ from .make_im import make_im
 
 logger = logging.getLogger(__name__)
 
+
 def combine_image(
     input_files: List[str],
     output_file: str,

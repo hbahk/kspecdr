@@ -12,6 +12,7 @@ from typing import Tuple, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
 def taipan_nominal_fibpos(spectid: str, n: int) -> np.ndarray:
     """
     Get nominal fiber positions for TAIPAN.

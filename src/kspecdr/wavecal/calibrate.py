@@ -17,13 +17,7 @@ from .landmarks import (
 from .crosscorr import crosscorr_analysis, generate_spectra_model
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-if not logger.hasHandlers():
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(levelname)s:%(name)s:%(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+
 
 def find_reference_fiber(nfib: int, goodfib: np.ndarray) -> int:
     """Finds a suitable reference fiber (middlemost good fiber)."""

@@ -14,6 +14,7 @@ from ..io.image import ImageFile
 
 logger = logging.getLogger(__name__)
 
+
 def make_red(args: Dict[str, Any]) -> None:
     """
     Main driver for reduction process (EX -> RED).
