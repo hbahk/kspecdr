@@ -501,7 +501,7 @@ def detect_traces(
             rep_pkpos[:npks] = p_pks
 
     # Step 2: Link peak locations into fiber traces
-    logger.info("Linking trace data to build fibre Tramline Map...")
+    logger.info("Linking trace data to build fiber Tramline Map...")
 
     # linking algorithm using clustering approach (different from 2dfdr)
     ntraces, trace_pts = _link_peaks_to_traces(pk_grid, nsteps, max_ntraces, MAXD)
@@ -616,7 +616,9 @@ def _link_peaks_to_traces(
     cluster_labels = fcluster(linkage_matrix, max_displacement, criterion="distance")
     unique_clusters = np.unique(cluster_labels)
     n_clusters = len(unique_clusters)
+    logger.debug(f"Number of clusters: {n_clusters}")
     n_clusters = min(n_clusters, max_ntraces)
+    logger.debug(f"Number of clusters after min: {n_clusters}")
 
     # Create trace points array
     trace_pts = np.zeros((max_ntraces, nsteps))
@@ -636,6 +638,7 @@ def _link_peaks_to_traces(
             significant_traces.append(trace_idx)
 
     ntraces = len(significant_traces)
+    logger.debug(f"Number of significant traces: {ntraces} over {n_clusters} clusters")
 
     # Step 3: Sort traces by median position (like Fortran's sorting)
     if ntraces > 0:
