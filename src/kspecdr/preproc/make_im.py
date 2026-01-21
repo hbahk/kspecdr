@@ -420,7 +420,7 @@ class MakeIM:
         variance_data = self._calculate_variance(image_data, noise, gain)
 
         # Write variance data
-        im_file.write_variance_data(variance_data.T)
+        im_file.write_variance_data(variance_data)
 
         logger.info("Variance HDU created and initialized")
 
