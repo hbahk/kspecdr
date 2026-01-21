@@ -201,8 +201,8 @@ class MakeIM:
             Path to second bad pixel mask file
         """
         # Read image data
+        image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
 
         # Apply first bad pixel mask if provided
         if bad_pixel_mask and Path(bad_pixel_mask).exists():
@@ -293,15 +293,15 @@ class MakeIM:
             Additional keyword arguments for bias processing
         """
         # Read image data
+        image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
 
         if use_bias:
             # Subtract bias frame if provided
             if bias_filename is not None:
                 # Read bias frame
                 with ImageFile(bias_filename, mode="READ") as bias_file:
-                    bias_data = bias_file.read_image_data(nx, ny)
+                    bias_data = bias_file.read_image_data()
                     # Get bias subtraction method from header or use defaults
                     bias_method = bias_file.get_header_value("BIASTYPE", "MEDIAN")
                     if bias_method == "MEDIAN":
@@ -376,12 +376,12 @@ class MakeIM:
             Path to dark frame file
         """
         # Read image data
+        image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
 
         # Read dark frame
         with ImageFile(dark_filename, mode="READ") as dark_file:
-            dark_data = dark_file.read_image_data(nx, ny)
+            dark_data = dark_file.read_image_data()
 
             # Get exposure times
             im_exp = im_file.get_header_value("EXPOSED", 1.0)
@@ -417,8 +417,8 @@ class MakeIM:
             The image file to process
         """
         # Read image data
+        image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
 
         # Get noise and gain information from header
         noise, gain = self._get_noise_gain_info(im_file)
@@ -527,13 +527,13 @@ class MakeIM:
         """
         # Read image data and variance
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
-        variance_data = im_file.read_variance_data(nx, ny)
+        image_data = im_file.read_image_data()
+        variance_data = im_file.read_variance_data()
 
         # Read long-slit flat field
         with ImageFile(lflat_filename, mode="READ") as lflat_file:
-            lflat_data = lflat_file.read_image_data(nx, ny)
-            lflat_variance = lflat_file.read_variance_data(nx, ny)
+            lflat_data = lflat_file.read_image_data()
+            lflat_variance = lflat_file.read_variance_data()
 
             # Check flat field class
             lflat_class = lflat_file.get_header_value("CLASS", "")
@@ -575,8 +575,8 @@ class MakeIM:
         """
         # Read image data
         nx, ny = im_file.get_size()
-        image_data = im_file.read_image_data(nx, ny)
-        variance_data = im_file.read_variance_data(nx, ny)
+        image_data = im_file.read_image_data()
+        variance_data = im_file.read_variance_data()
 
         if method == "LACOSMIC":
             # Use LACosmic algorithm
@@ -766,7 +766,7 @@ class MakeIM:
             nx, ny = raw_file.get_size()
 
             # Read image data (TDFIO_IMAGE_READ handles integer to float conversion)
-            image_data = raw_file.read_image_data(nx, ny)
+            image_data = raw_file.read_image_data()
 
             # Get instrument information
             instrument = raw_file.get_header_value("INSTRUME", "UNKNOWN")
@@ -815,7 +815,7 @@ class MakeIM:
 
                     # Read pre-subtract file
                     with ImageFile(sub_filename, mode="READ") as sub_file:
-                        sub_data = sub_file.read_image_data(nx, ny)
+                        sub_data = sub_file.read_image_data()
 
                         # Calculate scale from exposure time ratios
                         src_time = raw_file.get_header_value("EXPOSED", 1.0)
