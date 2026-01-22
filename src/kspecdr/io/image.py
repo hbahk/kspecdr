@@ -259,11 +259,12 @@ class ImageFile:
         if data is None:
             return None
 
-        # Check DISPAXIS
-        dispaxis = int(self.get_header_value("DISPAXIS", 1))
+        # # Check DISPAXIS
+        # dispaxis = int(self.get_header_value("DISPAXIS", 1))
 
-        if dispaxis == 2:
-            data = data.T
+        # if dispaxis == 2:
+        #     logger.info(f"Transposing wavelength data from (rows, cols) to (cols, rows)")
+        #     data = data.T
 
         return data.astype(np.float32)
 
