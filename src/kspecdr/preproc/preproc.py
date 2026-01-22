@@ -165,7 +165,7 @@ def combine_image(
         
     # Create output file
     # We create a new file based on the header of the first file
-    hdu = fits.PrimaryHDU(combined_data.T, header=ref_header)
+    hdu = fits.PrimaryHDU(combined_data, header=ref_header)
     
     # Update header
     hdu.header['HISTORY'] = f"Combined {n_files} images using {method}"
@@ -173,7 +173,7 @@ def combine_image(
         hdu.header['HISTORY'] = "Flux levels adjusted before combination"
     
     # Create variance HDU
-    var_hdu = fits.ImageHDU(combined_var.T, name='VARIANCE')
+    var_hdu = fits.ImageHDU(combined_var, name='VARIANCE')
     
     hdul = fits.HDUList([hdu, var_hdu])
     
