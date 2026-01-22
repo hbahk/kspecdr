@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import logging
 from scipy.interpolate import interp1d
+from astropy.table import Table
 from pathlib import Path
 from typing import Optional
 
@@ -459,8 +460,8 @@ def calibrate_spectral_axes(
 
     if diagnostic:
         if diagnostic_dir:
-            if not Path(diagnostic_dir).exists():
-                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+            if not diagnostic_dir.exists():
+                diagnostic_dir.mkdir(parents=True, exist_ok=True)
         else:
             diagnostic_dir = Path(".")
         cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
@@ -469,6 +470,21 @@ def calibrate_spectral_axes(
             np.column_stack((cal_centers, template_spectra)),
             fmt="%.4f",
         )
+    
+        # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
+        diag = Table({
+            "x_pts": x_pts, 
+            "y_pts": y_pts, 
+            "residuals": residuals, 
+            "outliers": outliers,
+        })
+        diag.write(diagnostic_dir / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
+        logger.info(f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}")
+        
+        # global fit coefficients
+        diag = Table({"coeffs": coeffs})
+        diag.write(diagnostic_dir / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
+        logger.info(f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}")
 
     # Apply Calibration
     pixcal_dp = apply_calibration_model(coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm)

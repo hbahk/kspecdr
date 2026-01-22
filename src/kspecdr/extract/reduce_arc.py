@@ -30,7 +30,7 @@ from ..wavecal.arc_io import read_arc_file
 logger = logging.getLogger(__name__)
 
 
-def reduce_arc(args: Dict[str, Any]) -> None:
+def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, diagnostic_dir: Optional[Path] = None) -> None:
     """
     Reduces a raw arc file to produce im(age), ex(tracted) and red(uced) arc files.
     """
@@ -131,6 +131,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
 
             pixcal_dp, status = calibrate_spectral_axes(
                 nx, nf, spectra, variance, wave_axis, goodfib, wlist, ilist, listsize, maxshift,
+                diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
             )
 
             if status == 0:
