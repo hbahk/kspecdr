@@ -146,7 +146,7 @@ def reduce_arc(args: Dict[str, Any]) -> None:
                 f"Instrument {instrument_code} not supported for new calibration method."
             )
 
-def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, diagnostic_dir: Optional[str] = None) -> None:
+def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] = False, diagnostic_dir: Optional[Path] = None) -> None:
     """
     Reduces multiple arc frames together by creating a combined landmark register
     and fitting a global wavelength solution.
@@ -320,7 +320,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
             # Extract Template (using master_ref_fib)
             # This generates lmr relative to the master reference
             template_spectra, template_mask, lmr, sigma_inpix, nlm = extract_template_spectrum(
-                spectra, nf, nx, frame["goodfib"], master_ref_fib, cen_axis, diagnostic=False
+                spectra, nf, nx, frame["goodfib"], master_ref_fib, cen_axis, diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
             )
 
             # Accumulate
@@ -389,7 +389,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
 
     x_pts, y_pts, _ = find_arc_line_matches(
         master_template, master_template_mask, avg_sigma_inpix, master_cen_axis, master_npix,
-        master_muv, master_av, master_mask, maxshift, diagnostic=False
+        master_muv, master_av, master_mask, maxshift, diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
     )
 
     logger.info(f"Total points found on master template: {len(x_pts)}")
@@ -452,8 +452,8 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
     # Write diagnostic file
     if get_diagnostic:
         if diagnostic_dir:
-            if not Path(diagnostic_dir).exists():
-                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+            if not diagnostic_dir.exists():
+                diagnostic_dir.mkdir(parents=True, exist_ok=True)
         
             # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
             diag = Table({
@@ -463,13 +463,13 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: bool = False, d
                 "outliers": outliers,
                 "lamps": lamps
             })
-            diag.write(Path(diagnostic_dir) / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
-            logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'identified_arcs.dat'}")
+            diag.write(diagnostic_dir / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
+            logger.info(f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}")
             
             # global fit coefficients
             diag = Table({"coeffs": coeffs})
-            diag.write(Path(diagnostic_dir) / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
-            logger.info(f"Diagnostic file written to {Path(diagnostic_dir) / 'global_fit_coefficients.dat'}")
+            diag.write(diagnostic_dir / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
+            logger.info(f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}")
         else:
             return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs, "lamps": lamps}
         

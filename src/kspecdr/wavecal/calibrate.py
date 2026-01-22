@@ -6,6 +6,8 @@ import sys
 import numpy as np
 import logging
 from scipy.interpolate import interp1d
+from pathlib import Path
+from typing import Optional
 
 from .wavelets import analyse_arc_signal
 from .landmarks import (
@@ -35,6 +37,7 @@ def find_reference_fiber(nfib: int, goodfib: np.ndarray) -> int:
     logger.error("No good fibres found.")
     return -1
 
+
 def extract_template_spectrum(
     spectra: np.ndarray,
     nfib: int,
@@ -42,7 +45,8 @@ def extract_template_spectrum(
     goodfib: np.ndarray,
     ref_fib: int,
     cen_axis: np.ndarray,
-    diagnostic: bool = False,
+    diagnostic: Optional[bool] = False,
+    diagnostic_dir: Optional[Path] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
     """
     Extracts a high S/N template spectrum by aligning and stacking fibers.
@@ -68,7 +72,12 @@ def extract_template_spectrum(
     logger.info(f"Number of landmarks: {nlm}")
 
     if diagnostic:
-        np.savetxt("LANDMARK_REGISTER.txt", lmr, fmt="%.4f")
+        if diagnostic_dir:
+            if not Path(diagnostic_dir).exists():
+                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            diagnostic_dir = Path(".")
+        np.savetxt(diagnostic_dir / "LANDMARK_REGISTER.txt", lmr, fmt="%.4f")
 
     # 4. Rebin Spectra (Synchronise)
     rebin_spectra = synchronise_signals(
@@ -86,7 +95,7 @@ def extract_template_spectrum(
     valid_pixels = valid_counts >= 0.5 * ngoodfibs
 
     # Avoid division by zero
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         template_spectra[valid_pixels] = sums[valid_pixels] / valid_counts[valid_pixels]
 
     template_mask[~valid_pixels] = True
@@ -94,17 +103,19 @@ def extract_template_spectrum(
     # Extend mask
     np_ext = 7
     from scipy.ndimage import binary_dilation
+
     template_mask = binary_dilation(template_mask, iterations=np_ext)
     template_spectra[template_mask] = 0.0
 
     if diagnostic:
         np.savetxt(
-            "TEMPLATE_SPECTRA.dat",
+            diagnostic_dir / "TEMPLATE_SPECTRA.dat",
             np.column_stack((cen_axis, template_spectra)),
             fmt="%.4f",
         )
 
     return template_spectra, template_mask, lmr, sigma_inpix, nlm
+
 
 def find_arc_line_matches(
     template_spectra: np.ndarray,
@@ -114,9 +125,10 @@ def find_arc_line_matches(
     npix: int,
     muv: np.ndarray,
     av: np.ndarray,
-    mask: np.ndarray, # lamp lines mask
+    mask: np.ndarray,  # lamp lines mask
     maxshift: int,
-    diagnostic: bool = False,
+    diagnostic: Optional[bool] = False,
+    diagnostic_dir: Optional[Path] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Identifies arc lines in the template spectrum.
@@ -165,8 +177,13 @@ def find_arc_line_matches(
     )
 
     if diagnostic:
+        if diagnostic_dir:
+            if not Path(diagnostic_dir).exists():
+                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            diagnostic_dir = Path(".")
         np.savetxt(
-            "MODEL_SPECTRA.dat",
+            diagnostic_dir / "MODEL_SPECTRA.dat",
             np.column_stack((cen_axis, model_spectra)),
             fmt="%.4f",
         )
@@ -263,10 +280,9 @@ def find_arc_line_matches(
     valid = ~mask2
     return pix_newv[valid], muv[valid], mask2
 
+
 def fit_calibration_model(
-    x_pts: np.ndarray,
-    y_pts: np.ndarray,
-    poly_order: int = 3
+    x_pts: np.ndarray, y_pts: np.ndarray, poly_order: int = 3
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fits a robust polynomial to the points.
@@ -278,7 +294,7 @@ def fit_calibration_model(
     """
     if len(x_pts) < poly_order + 1:
         logger.warning(f"Not enough points for fit: {len(x_pts)}")
-        return np.zeros(poly_order+1), np.array([]), np.array([])
+        return np.zeros(poly_order + 1), np.array([]), np.array([])
 
     # Initial Fit
     coeffs = robust_polyfit(x_pts, y_pts, poly_order)
@@ -290,7 +306,7 @@ def fit_calibration_model(
     mad_res = np.median(np.abs(residuals - med_res))
 
     outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
-    
+
     if np.any(outliers):
         logger.info(f"Removing {np.sum(outliers)} outliers.")
         x_clean = x_pts[~outliers]
@@ -298,11 +314,12 @@ def fit_calibration_model(
 
         if len(x_clean) < poly_order + 1:
             logger.warning("Too few points after outlier rejection.")
-            return coeffs, residuals, outliers # Return initial fit if too few
+            return coeffs, residuals, outliers  # Return initial fit if too few
 
         coeffs = robust_polyfit(x_clean, y_clean, poly_order)
 
     return coeffs, residuals, outliers
+
 
 def apply_calibration_model(
     coeffs: np.ndarray,
@@ -311,7 +328,7 @@ def apply_calibration_model(
     goodfib: np.ndarray,
     ref_fib: int,
     lmr: np.ndarray,
-    nlm: int
+    nlm: int,
 ) -> np.ndarray:
     """
     Propagates the master calibration to all fibers using landmark shifts.
@@ -327,6 +344,7 @@ def apply_calibration_model(
 
     return synchcal_axes.T
 
+
 def calibrate_spectral_axes(
     npix: int,
     nfib: int,
@@ -338,7 +356,8 @@ def calibrate_spectral_axes(
     flux_tab: np.ndarray,
     size_tab: int,
     maxshift: int,
-    diagnostic: bool = True,
+    diagnostic: Optional[bool] = False,
+    diagnostic_dir: Optional[Path] = None,
 ) -> tuple[np.ndarray, int]:
     """
     Calibrate the pixels of extracted arclamp spectra.
@@ -403,13 +422,22 @@ def calibrate_spectral_axes(
 
     # Extract Template
     template_spectra, template_mask, lmr, sigma_inpix, nlm = extract_template_spectrum(
-        spectra, nfib, npix, goodfib, ref_fib, cen_axis, diagnostic
+        spectra, nfib, npix, goodfib, ref_fib, cen_axis, diagnostic, diagnostic_dir
     )
 
     # Identify Arc Lines
     x_pts, y_pts, _ = find_arc_line_matches(
-        template_spectra, template_mask, sigma_inpix, cen_axis, npix,
-        muv, av, mask, maxshift, diagnostic
+        template_spectra,
+        template_mask,
+        sigma_inpix,
+        cen_axis,
+        npix,
+        muv,
+        av,
+        mask,
+        maxshift,
+        diagnostic,
+        diagnostic_dir,
     )
 
     logger.info(f"Valid points: {len(x_pts)}")
@@ -430,16 +458,19 @@ def calibrate_spectral_axes(
         logger.info(f"RMS residual: {rms_res:.4f}")
 
     if diagnostic:
+        if diagnostic_dir:
+            if not Path(diagnostic_dir).exists():
+                Path(diagnostic_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            diagnostic_dir = Path(".")
         cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
         np.savetxt(
-            "CALIBRATED_SPECTRA.dat",
+            diagnostic_dir / "CALIBRATED_SPECTRA.dat",
             np.column_stack((cal_centers, template_spectra)),
             fmt="%.4f",
         )
 
     # Apply Calibration
-    pixcal_dp = apply_calibration_model(
-        coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm
-    )
+    pixcal_dp = apply_calibration_model(coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm)
 
     return pixcal_dp, 0
