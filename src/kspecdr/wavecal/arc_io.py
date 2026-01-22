@@ -44,11 +44,11 @@ def read_arc_file(
 
     if arc_dir:
         if isinstance(arc_dir, Path):
-            fpath = arc_dir / f"{lamp.lower()}.arc"
+            fpath = arc_dir / f"{lamp}.arc"
         else:
-            fpath = Path(arc_dir) / f"{lamp.lower()}.arc"
+            fpath = Path(arc_dir) / f"{lamp}.arc"
     else:
-        fpath = Path(f"{lamp.lower()}.arc")
+        fpath = Path(f"{lamp}.arc")
 
     # Check current dir
     if not fpath.exists():
