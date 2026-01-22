@@ -1,10 +1,18 @@
+out
+resources
+out_generic
+LANDMARK_REGISTER.txt
+MODEL_SPECTRA.dat
+TEMPLATE_SPECTRA.dat
+CALIBRATED_SPECTRA.dat
+identified_arcs.dat
+global_fit_coefficients.dat
+CrsCgm0.fits
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-out
-resources
-out_generic
 
 # C extensions
 *.so
