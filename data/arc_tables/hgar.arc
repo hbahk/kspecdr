@@ -4,26 +4,29 @@
 # obtained with the Isoplane320 spectrograph and the PIXIS1300BX detector
 # (24 Dec 2025).
 # Hyeonguk Bahk, Jan 2026
+# Updated the Hg line wavelengths with the values from Table 2, https://mcphersoninc.com/pdf/mercuryWavelengths.pdf (Sansonetti, Salit, and Reader APPLIED OPTICS / Vol. 35, No. 1 / 1 January 1996).
+# Updated the Ar line wavelengths from NIST ASD air wavelengths
+# Hyeonguk Bahk, Jan 2026
 * Hg lines
-4044.4      1
-4046.6      1
-4339.2      17
-4347.5      17
-4358.4      7
-5460.7      37
-5769.6      4
-5790.7      5
+4046.565    1
+4077.837    0.05
+4347.506    0.05
+4358.335    17
+5460.750    37
+5769.610    4
+5790.670    5
 
 * Ar lines
-7503.9      1
-7514.6      0.5
-7635.1      3
-7723.8      2
-7948.2      1
-8006.2      1
-8014.8      1
-8103.7      1
-8115.3      2
-8264.5      2
-8408.2      1
-8424.6      1
+7503.869    1
+7514.652    0.5
+7635.106    3
+7723.761    1
+7724.207    1
+7948.176    1
+8006.157    1
+8014.786    1
+8103.693    1
+8115.311    2
+8264.522    2
+8408.210    1
+8424.648    1
