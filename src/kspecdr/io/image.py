@@ -405,6 +405,15 @@ class ImageFile:
 
         header = self.hdul[0].header
         return header.get(keyword, default)
+    
+    def set_header_value(self, keyword: str, value: str) -> None:
+        """
+        Set a header keyword value.
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+
+        self.hdul[0].header[keyword] = value
 
     def read_fiber_types(self, max_nfibres: int) -> Tuple[np.ndarray, int]:
         """
@@ -675,7 +684,7 @@ class ImageFile:
             raise RuntimeError("File not opened")
 
         # Set CLASS keyword in primary HDU
-        self.hdul[0].header["CLASS"] = class_type
+        self.set_header_value("CLASS", class_type)
 
     def delete_keyword(self, keyword: str) -> None:
         """
