@@ -194,6 +194,7 @@ def combine_image(
 def reduce_bias(
     raw_files: List[str],
     output_file: str = "BIAScombined.fits",
+    bias_type: str = "MASTER",
     **kwargs
 ) -> str:
     """
@@ -237,6 +238,7 @@ def reduce_bias(
     
     with ImageFile(combined_file, mode='UPDATE') as im:
         im.set_class('BIAS')
+        im.set_header_value('BIASTYPE', bias_type)
         
     return combined_file
 
