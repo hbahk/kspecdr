@@ -8,7 +8,7 @@ import logging
 from scipy.interpolate import interp1d
 from astropy.table import Table
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from .wavelets import analyse_arc_signal
 from .landmarks import (
@@ -116,6 +116,143 @@ def extract_template_spectrum(
         )
 
     return template_spectra, template_mask, lmr, sigma_inpix, nlm
+
+
+def _parabolic_subpix(y0: float, y1: float, y2: float) -> Optional[float]:
+    # returns delta in [-1, 1] roughly, or None if degenerate
+    denom = 2.0 * y1 - y0 - y2
+    if denom == 0.0:
+        return None
+    return 0.5 * (y0 - y2) / denom
+
+
+def refine_peak_gaussian_fast(
+    spectrum: np.ndarray,
+    idx_guess: int,
+    sigma0: float,
+    hw: int,
+    *,
+    max_iter: int = 6,
+    clip_sigma: Tuple[float, float] = (0.3, 8.0),
+    min_amp_snr: float = 2.0,
+) -> Tuple[float, bool]:
+    """
+    Fast Gaussian(+linear background) peak refinement around idx_guess.
+
+    Model:
+        y = A * exp(-(x-x0)^2/(2*s^2)) + B + C*(x-xmean)
+
+    Returns:
+        x0_refined (float), ok (bool)
+    """
+    n = spectrum.size
+    start = max(0, idx_guess - hw)
+    end = min(n, idx_guess + hw + 1)
+    if end - start < 5:
+        return float(idx_guess), False
+
+    x = np.arange(start, end, dtype=np.float64)
+    y = spectrum[start:end].astype(np.float64, copy=False)
+
+    # quick sanity: require a peak not at the boundary
+    local_max = int(np.argmax(y)) + start
+    if local_max <= start or local_max >= end - 1:
+        return float(idx_guess), False
+
+    # initial x0 from 3-point parabola around the local maximum
+    y0, y1, y2 = spectrum[local_max - 1], spectrum[local_max], spectrum[local_max + 1]
+    delta = _parabolic_subpix(float(y0), float(y1), float(y2))
+    if delta is None or not np.isfinite(delta):
+        x0 = float(local_max)
+    else:
+        x0 = float(local_max) + float(delta)
+
+    s = float(np.clip(sigma0, clip_sigma[0], clip_sigma[1]))
+
+    # center x for better conditioning of background slope
+    xmean = float(np.mean(x))
+    xc = x - xmean
+
+    # robust-ish noise estimate from window (MAD)
+    med = float(np.median(y))
+    mad = float(np.median(np.abs(y - med))) + 1e-12
+    noise = 1.4826 * mad
+
+    # If the peak is tiny, fitting is often unstable; bail early.
+    peak_amp = float(np.max(y) - med)
+    if peak_amp < min_amp_snr * noise:
+        return x0, False
+
+    ok = True
+
+    for _ in range(max_iter):
+        # Gaussian basis at current x0, s
+        dx = x - x0
+        inv_s2 = 1.0 / (s * s)
+        G = np.exp(-0.5 * (dx * dx) * inv_s2)
+
+        # Linear least squares for A,B,C in: y = A*G + B + C*xc
+        # Design matrix: [G, 1, xc]
+        X = np.column_stack((G, np.ones_like(G), xc))
+        try:
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        except np.linalg.LinAlgError:
+            ok = False
+            break
+
+        A, B, C = beta
+        # If amplitude goes negative or tiny, it's usually a bad fit/line blending.
+        if not np.isfinite(A) or A <= 0:
+            ok = False
+            break
+
+        y_model = A * G + B + C * xc
+        r = y - y_model
+
+        # Derivatives wrt x0 and s (only 2 params)
+        # dG/dx0 = G * (x - x0) / s^2
+        dG_dx0 = G * (dx * inv_s2)
+
+        # dG/ds = G * (x-x0)^2 / s^3
+        dG_ds = G * ((dx * dx) / (s * s * s))
+
+        # Jacobian of model wrt [x0, s]
+        # dy/dx0 = A * dG/dx0
+        # dy/ds  = A * dG/ds
+        J = np.column_stack((A * dG_dx0, A * dG_ds))
+
+        # Gauss-Newton step: solve J * step = r
+        try:
+            step, *_ = np.linalg.lstsq(J, r, rcond=None)
+        except np.linalg.LinAlgError:
+            ok = False
+            break
+
+        if not np.all(np.isfinite(step)):
+            ok = False
+            break
+
+        dx0, ds = float(step[0]), float(step[1])
+
+        # damping to avoid overshoot (helps on blended/asymmetric lines)
+        dx0 = np.clip(dx0, -0.7, 0.7)
+        ds = np.clip(ds, -0.5, 0.5)
+
+        x0_new = x0 + dx0
+        s_new = np.clip(s + ds, clip_sigma[0], clip_sigma[1])
+
+        # convergence
+        if abs(x0_new - x0) < 1e-4 and abs(s_new - s) < 1e-4:
+            x0, s = x0_new, float(s_new)
+            break
+
+        x0, s = x0_new, float(s_new)
+
+    # keep x0 in window bounds (optional)
+    if x0 < start or x0 > end - 1:
+        ok = False
+
+    return float(x0), ok
 
 
 def find_arc_line_matches(
@@ -262,21 +399,36 @@ def find_arc_line_matches(
             mask2[i] = True
             continue
 
-        y0 = template_spectra[local_max_idx - 1]
-        y1 = template_spectra[local_max_idx]
-        y2 = template_spectra[local_max_idx + 1]
+        # y0 = template_spectra[local_max_idx - 1]
+        # y1 = template_spectra[local_max_idx]
+        # y2 = template_spectra[local_max_idx + 1]
 
-        denom = 2 * y1 - y0 - y2
-        if denom == 0:
+        # denom = 2 * y1 - y0 - y2
+        # if denom == 0:
+        #     mask2[i] = True
+        #     continue
+
+        # delta = 0.5 * (y0 - y2) / denom
+        # pix_new = local_max_idx + delta
+        # if np.isnan(pix_new):
+        #     mask2[i] = True
+        #     continue
+        # pix_newv[i] = pix_new
+
+        # Refine peak position using Gaussian fit
+        x0_fit, ok = refine_peak_gaussian_fast(
+            template_spectra,
+            idx_guess=local_max_idx,
+            sigma0=sigma_inpix,
+            hw=hw,
+            max_iter=6,
+        )
+
+        if not ok or not np.isfinite(x0_fit):
             mask2[i] = True
             continue
 
-        delta = 0.5 * (y0 - y2) / denom
-        pix_new = local_max_idx + delta
-        if np.isnan(pix_new):
-            mask2[i] = True
-            continue
-        pix_newv[i] = pix_new
+        pix_newv[i] = x0_fit
 
     valid = ~mask2
     return pix_newv[valid], muv[valid], mask2
@@ -470,21 +622,35 @@ def calibrate_spectral_axes(
             np.column_stack((cal_centers, template_spectra)),
             fmt="%.4f",
         )
-    
+
         # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
-        diag = Table({
-            "x_pts": x_pts, 
-            "y_pts": y_pts, 
-            "residuals": residuals, 
-            "outliers": outliers,
-        })
-        diag.write(diagnostic_dir / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
-        logger.info(f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}")
-        
+        diag = Table(
+            {
+                "x_pts": x_pts,
+                "y_pts": y_pts,
+                "residuals": residuals,
+                "outliers": outliers,
+            }
+        )
+        diag.write(
+            diagnostic_dir / "identified_arcs.dat",
+            format="ascii.fixed_width_two_line",
+            overwrite=True,
+        )
+        logger.info(
+            f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}"
+        )
+
         # global fit coefficients
         diag = Table({"coeffs": coeffs})
-        diag.write(diagnostic_dir / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
-        logger.info(f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}")
+        diag.write(
+            diagnostic_dir / "global_fit_coefficients.dat",
+            format="ascii.fixed_width_two_line",
+            overwrite=True,
+        )
+        logger.info(
+            f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}"
+        )
 
     # Apply Calibration
     pixcal_dp = apply_calibration_model(coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm)
