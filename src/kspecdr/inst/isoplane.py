@@ -178,6 +178,7 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
 
     # 2. Gain and Noise (Measured values for Low Noise / Low Gain)
     # RDN = 16.03 e- rms, Gain = 4.09 e-/ADU
+    # TODO: change this to the dict-based calls depending on the CCD settings (IQ, Gain mode)
     new_header["RO_GAIN"] = (4.09, "Readout Amplifer gain (e-/ADU)")
     new_header["RO_NOISE"] = (16.03, "Readout noise (electrons)")
 
