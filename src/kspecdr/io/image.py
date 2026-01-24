@@ -164,7 +164,7 @@ class ImageFile:
         self.hdul[0].header["DISPAXIS"] = 1
 
         # Write to file
-        self.hdul.writeto(self.filename, overwrite=True)
+        # self.hdul.writeto(self.filename, overwrite=True)
 
     def save_as(self, filename: str) -> None:
         """
