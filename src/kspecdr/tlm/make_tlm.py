@@ -512,7 +512,7 @@ def detect_traces(
     # Step 2: Link peak locations into fiber traces
     logger.info("Linking trace data to build fiber Tramline Map...")
 
-    # linking algorithm using clustering approach (different from 2dfdr)
+    # linking algorithm using MTT approach
     ntraces, trace_pts = multi_target_tracking(pk_grid, nsteps, max_ntraces, MAXD)
 
     logger.info(f"Found {ntraces} traces across the image")
@@ -1627,7 +1627,7 @@ def _wavelet_peak_detection(
             expected_n=max_peaks,
             heights=peak_heights,
             height_weight=0.1,         # tune: 0.1~0.5 typical
-            min_height_quantile=0.2,   # optionally 0.05~0.2 to drop tiny junk peaks
+            min_height_quantile=0.1,   # optionally 0.05~0.2 to drop tiny junk peaks
         )
 
         logger.debug(f"# of peaks after regular run selection: {len(peak_positions)}")
