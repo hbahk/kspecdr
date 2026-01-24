@@ -34,9 +34,6 @@ def robust_polyfit(x, y, order):
         )
         model.fit(x.reshape(-1, 1), y)
 
-        # Extract coefficients - this is a bit tricky with Pipeline/RANSAC
-        # Easier to just predict
-        # Or use the inlier mask to do numpy polyfit
         inlier_mask = model.named_steps["ransacregressor"].inlier_mask_
         if np.sum(inlier_mask) < order + 1:
             return np.polyfit(x, y, order)
@@ -45,6 +42,21 @@ def robust_polyfit(x, y, order):
     except Exception:
         return np.polyfit(x, y, order)
 
+def check_consistency(coeffs_new, coeffs_ref, npix, threshold_pix=5.0):
+    """
+    Checks if new coefficients are consistent with reference coefficients.
+    Evaluates at normalized positions 0.0, 0.5, 1.0.
+    """
+    x_eval = np.array([0.0, 0.5, 1.0])
+    y_new = np.polyval(coeffs_new, x_eval)
+    y_ref = np.polyval(coeffs_ref, x_eval)
+
+    diff_norm = np.abs(y_new - y_ref)
+    diff_pix = diff_norm * npix
+
+    if np.max(diff_pix) > threshold_pix:
+        return False
+    return True
 
 def landmark_register(
     spectra: np.ndarray,
@@ -67,7 +79,6 @@ def landmark_register(
     t = np.arange(npix, dtype=float)
 
     # Store peak lists
-    # peaks_list[fib] = [p1, p2, ...]
     peaks_list = []
 
     for fib in range(nfib):
@@ -76,12 +87,8 @@ def landmark_register(
             continue
 
         signal = spectra[:, fib]
-        # Replace bad values
-        # Assumed handled by caller or pre-filled
-
         cwt = wavelet_convolution(signal, t, scale)
 
-        # Use ztol or auto
         _ztol = ztol
         if _ztol <= 0:
             _ztol = 0.1 * np.max(cwt)
@@ -89,19 +96,9 @@ def landmark_register(
         pks = find_resonant_peaks2(cwt, t, _ztol)
         peaks_list.append(pks)
 
-    # 2. Multi-Target Tracking (Simplified)
-    # We want to link peaks across fibers.
-    # Simple approach: Find nearest neighbors.
-
-    # Reference peaks
+    # 2. Multi-Target Tracking
     ref_peaks = peaks_list[ref_fib]
-
-    # Structure to hold matched peaks: matches[ref_peak_idx][fib] = peak_pos
     matches = {i: {ref_fib: p} for i, p in enumerate(ref_peaks)}
-
-    # For each fiber, try to match to ref peaks
-    # We can assume distortion is smooth.
-    # Start from ref_fib and go up/down.
 
     for direction in [1, -1]:
         curr_fib = ref_fib
@@ -116,13 +113,8 @@ def landmark_register(
 
             curr_peaks = peaks_list[next_fib]
 
-            # Match existing tracks to curr_peaks
             for ref_idx in list(matches.keys()):
-                # Get position in previous valid fiber (or closest)
-                # Ideally track prediction. Here simple nearest.
-                # Find last valid position for this track
                 last_pos = None
-                # Search backwards from next_fib
                 for f in range(next_fib - direction, ref_fib - direction, -direction):
                     if f in matches[ref_idx]:
                         last_pos = matches[ref_idx][f]
@@ -131,7 +123,6 @@ def landmark_register(
                 if last_pos is None:
                     continue
 
-                # Find nearest peak in curr_peaks
                 if len(curr_peaks) == 0:
                     continue
 
@@ -139,19 +130,15 @@ def landmark_register(
                 min_idx = np.argmin(dists)
                 min_dist = dists[min_idx]
 
-                # Threshold (e.g. 20 pixels)
                 if min_dist < 20.0:
                     matches[ref_idx][next_fib] = curr_peaks[min_idx]
 
             curr_fib = next_fib
 
     # 3. Compile LMR
-    # Select tracks present in > 50% of fibers
-    # Or > 3 fibers
-
     valid_tracks = []
     for ref_idx, track in matches.items():
-        if len(track) > 3:  # Arbitrary threshold
+        if len(track) > 3:
             valid_tracks.append(track)
 
     nlm = len(valid_tracks)
@@ -179,9 +166,8 @@ def synchronise_signals(
     """
     rebin_spectra = np.zeros_like(spectra)
 
-    axis1 = np.arange(npix, dtype=float)  # Reference axis
+    axis1 = np.arange(npix, dtype=float)
 
-    # Split loop into two legs: Down (Ref -> 0) and Up (Ref+1 -> NFIB)
     # Default Identity coeffs for deg=2 (y=x): [0, 1, 0]
     default_coeffs = np.array([0.0, 1.0, 0.0])
 
@@ -198,8 +184,8 @@ def synchronise_signals(
                 continue
 
             # Get landmarks
-            x_pts = []  # In this fibre
-            y_pts = []  # In ref fibre
+            x_pts = []
+            y_pts = []
 
             for i in range(nlm):
                 p_fib = lmr[fib, i]
@@ -209,16 +195,28 @@ def synchronise_signals(
                     y_pts.append(p_ref)
 
             coeffs = last_good_coeffs
+
+            # Validity check logic
+            valid_fit = False
+
             if len(x_pts) >= 3:
                 x_pts = np.array(x_pts)
                 y_pts = np.array(y_pts)
-                # Fit mapping: ref_pos = f(fib_pos).
-                coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 2)
-                last_good_coeffs = coeffs
+
+                new_coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 2)
+
+                # Check consistency
+                if check_consistency(new_coeffs, last_good_coeffs, npix, threshold_pix=5.0):
+                    coeffs = new_coeffs
+                    valid_fit = True
+                else:
+                    logger.warning(f"Synchronise Signals: Fibre {fib} fit inconsistent with neighbor. Using neighbor coefficients.")
             else:
                 logger.warning(f"Synchronise Signals: Fibre {fib} has insufficient landmarks ({len(x_pts)}). Using neighbor coefficients.")
 
-            # axis2 = f(axis1)
+            if valid_fit:
+                last_good_coeffs = coeffs
+
             axis2_norm = np.polyval(coeffs, axis1 / npix)
             axis2 = axis2_norm * npix
 
@@ -244,12 +242,9 @@ def synchronise_calibration_last(
     """
     Synchronise calibration from ref fibre to others.
     Iterates outwards from ref_fib to propagate calibration on failure.
-
-    cal_axis: Calibration of reference fibre (wavelengths).
     """
     synchcal_axes = np.zeros((nfib, npix + 1))
 
-    # cal_axis has length NPIX+1 (edges)
     axis1 = np.arange(npix + 1, dtype=float)
 
     # Default Identity coeffs for deg=3 (y=x): [0, 0, 1, 0]
@@ -267,8 +262,8 @@ def synchronise_calibration_last(
             if maskv[fib]:
                 continue
 
-            x_pts = []  # In this fibre (pixel)
-            y_pts = []  # In ref fibre (pixel)
+            x_pts = []
+            y_pts = []
 
             for i in range(nlm):
                 p_fib = lmr[fib, i]
@@ -278,22 +273,28 @@ def synchronise_calibration_last(
                     y_pts.append(p_ref)
 
             coeffs = last_good_coeffs
+            valid_fit = False
+
             if len(x_pts) >= 3:
                 x_pts = np.array(x_pts)
                 y_pts = np.array(y_pts)
-                # Map this fibre pixels -> ref fibre pixels
-                coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 3)  # Cubic
-                last_good_coeffs = coeffs
+
+                new_coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 3)  # Cubic
+
+                if check_consistency(new_coeffs, last_good_coeffs, npix, threshold_pix=5.0):
+                     coeffs = new_coeffs
+                     valid_fit = True
+                else:
+                     logger.warning(f"Synchronise Calibration: Fibre {fib} fit inconsistent with neighbor. Using neighbor coefficients.")
             else:
                 logger.warning(f"Synchronise Calibration: Fibre {fib} has insufficient landmarks ({len(x_pts)}). Using neighbor coefficients.")
+
+            if valid_fit:
+                last_good_coeffs = coeffs
 
             axis1_norm = axis1 / npix
             axis2_norm = np.polyval(coeffs, axis1_norm)
             axis2 = axis2_norm * npix
-
-            # axis2 contains coordinates in Ref Fibre Pixels.
-            # We know Ref Fibre Pixels -> Wavelength (cal_axis).
-            # Interpolate Wavelength at axis2.
 
             f_interp = interp1d(
                 axis1, cal_axis, kind="linear", bounds_error=False, fill_value="extrapolate"
