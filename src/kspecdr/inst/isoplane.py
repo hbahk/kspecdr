@@ -9,13 +9,14 @@ import logging
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.time import Time
+from astropy.table import Table
 import numpy as np
 import re
 
 logger = logging.getLogger(__name__)
 
 
-def add_fiber_table(hdul: fits.HDUList, n_fibers: int) -> None:
+def add_fiber_table(hdul: fits.HDUList, n_fibers: int, fiber_table: Table = None) -> None:
     """
     Add a dummy fiber table to the HDUList.
 
@@ -25,26 +26,39 @@ def add_fiber_table(hdul: fits.HDUList, n_fibers: int) -> None:
         The FITS HDUList to modify in place.
     n_fibers : int
         Number of fibers to include in the table.
+    fiber_table : Table, optional
+        Fiber table to add to the HDUList. If None, a dummy fiber table will be created.
     """
     logger.info(f"Adding fiber table with {n_fibers} fibers")
 
-    # Create columns
-    # Standard 2dfdr fiber table columns:
-    # TYPE (1A), NAME (80A), MAGNITUDE (E), RA (D), DEC (D), X (E), Y (E), etc.
-    # For dummy/isoplane, we primarily need TYPE='P' (Program) or 'S' (Sky)
-    # to ensure extraction works.
+    if fiber_table is None:
+        # Create columns
+        # Standard 2dfdr fiber table columns:
+        # TYPE (1A), NAME (80A), MAGNITUDE (E), RA (D), DEC (D), X (E), Y (E), etc.
+        # For dummy/isoplane, we primarily need TYPE='P' (Program) or 'S' (Sky)
+        # to ensure extraction works.
 
-    # Create arrays
-    # All Program fibers for now
-    types = np.array(["P"] * n_fibers)
-    names = np.array([f"Fiber {i+1}" for i in range(n_fibers)])
+        # Create arrays
+        # All Program fibers for now
+        types = np.array(["P"] * n_fibers)
+        names = np.array([f"Fiber {i+1}" for i in range(n_fibers)])
 
-    # Create columns
-    c1 = fits.Column(name="TYPE", format="1A", array=types)
-    c2 = fits.Column(name="NAME", format="20A", array=names)
+        # Create columns
+        c1 = fits.Column(name="TYPE", format="1A", array=types)
+        c2 = fits.Column(name="NAME", format="20A", array=names)
 
-    # Create Binary Table HDU
-    fib_hdu = fits.BinTableHDU.from_columns([c1, c2], name="FIBRES")
+        # Create Binary Table HDU
+        fib_hdu = fits.BinTableHDU.from_columns([c1, c2], name="FIBRES")
+
+    else:
+        if len(fiber_table) != n_fibers:
+            logger.warning(f"Fiber table has {len(fiber_table)} rows, but n_fibers={n_fibers} were given. Ignoring n_fibers argument.")
+            
+        fibcols = []
+        for col in fiber_table.columns:
+            c = fits.Column(name=col.name, format=col.format, array=col.data)
+            fibcols.append(c)
+        fib_hdu = fits.BinTableHDU.from_columns(fibcols, name="FIBRES")
 
     # Append to HDUList
     hdul.append(fib_hdu)
@@ -241,7 +255,27 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
             sensor_name = card.value
             break
     new_header["DETECTOR"] = (sensor_name, "Detector name")
-
+    # Orientation of the detector readout
+    ori_uncorr = header["PI ACQUISITION ORIENTATION LIGHTPATHORIENTATIONUNCORRECTED"]
+    ori_result = header["PI CAMERA EXPERIMENT ACQUISITION ORIENTATION RESULT"]
+    logger.debug(f"ori_uncorr: {ori_uncorr}")
+    logger.debug(f"ori_result: {ori_result}")
+    
+    # Horizontal orientation of the detector readout
+    i_ori_uncorr_horizontal = -1 if "FlippedHorizontally" in ori_uncorr else 1
+    i_ori_result_horizontal = -1 if "FlippedHorizontally" in ori_result else 1
+    flip_horizontal = i_ori_uncorr_horizontal * i_ori_result_horizontal
+    new_header["FLIPHORI"] = (flip_horizontal, "Flip horizontal orientation")
+    logger.debug(f"flip_horizontal: {flip_horizontal}")
+    logger.debug(f"FLIPHORI: {new_header["FLIPHORI"]}")
+    
+    
+    # Vertical orientation of the detector readout
+    i_ori_uncorr_vertical = -1 if "FlippedVertically" in ori_uncorr else 1
+    i_ori_result_vertical = -1 if "FlippedVertically" in ori_result else 1
+    flip_vertical = i_ori_uncorr_vertical * i_ori_result_vertical
+    new_header["FLIPVERT"] = (flip_vertical, "Flip vertical orientation")
+    
     # 6. Grating Info
     # HIERARCH PI SPECTROMETER GRATING SELECTED = '[500nm,150][2][0]'
     # Need to parse: 150 lines/mm, 500nm center?
@@ -282,7 +316,7 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
         reciprocal_linear_dispersion = 23.0 * (1200 / lines_per_mm) # Angstrom / mm, from the isoplane datasheet
         pixel_width = float(new_header["PI CAMERA SENSOR INFORMATION PIXEL WIDTH"]) * 1e-3 # micron to mm # TODO: check - height or width? they are the same for PIXIS1300BX
         dispersion = reciprocal_linear_dispersion * pixel_width # Angstrom / pixel
-        new_header["DISPERS"] = (-dispersion, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
+        new_header["DISPERS"] = (dispersion, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
     # new_header["DISPERS"] = (-3.95, "Central dispersion (Angstrom/pixel)") # negative because the dispersion is in the opposite direction of the wavelength
 
     # 9. Spectrograph ID
@@ -303,3 +337,44 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     new_header["DISPAXIS"] = (1, "Dispersion axis (1=Horizontal, 2=Vertical)")
 
     return new_header
+
+
+def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str, n_fibers: int = None, fiber_table: Table = None) -> None:
+    if n_fibers is None and fiber_table is None:
+        raise ValueError("Either n_fibers or fiber_table must be provided")
+    
+    hdul = fits.open(fpath)
+    hdr = hdul[0].header
+    new_hdr = convert_isoplane_header(hdr, ndfclass=ndfclass)
+
+    # add fiber table
+    add_fiber_table(hdul, n_fibers=n_fibers, fiber_table=fiber_table)
+
+    # just use the first frame for now
+    if hdul[0].data.ndim == 3:
+        if hdul[0].data.shape[0] > 1:
+            raise ValueError("More than one frame in the input file. Use combine_image to combine frames.")
+        else:
+            hdul[0].data = hdul[0].data[0]
+            # make new fits file with new header and fiber table
+            new_hdr["NAXIS"] = 2
+            new_hdr.remove("NAXIS3")
+            
+    elif hdul[0].data.ndim == 2:
+        pass
+    else:
+        raise ValueError(f"Input data has {hdul[0].data.ndim} dimensions. Expected 2 or 3.")
+    
+    if new_hdr["FLIPHORI"] > 0:
+        hdul[0].data = np.flip(hdul[0].data, axis=1)
+        new_hdr["FLIPHORI"] = -1
+        logger.info("Flipped horizontal orientation")
+        
+    if new_hdr["FLIPVERT"] > 0:
+        hdul[0].data = np.flip(hdul[0].data, axis=0)
+        new_hdr["FLIPVERT"] = -1
+        logger.info("Flipped vertical orientation")
+        
+    hdul[0].header = new_hdr
+
+    hdul.writeto(output_fpath, overwrite=True)
