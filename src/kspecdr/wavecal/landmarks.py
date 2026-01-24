@@ -175,59 +175,61 @@ def synchronise_signals(
 ) -> np.ndarray:
     """
     Rebin spectra to align landmarks.
-    Iterates outwards from ref_fib to propagate calibration on failure.
     """
     rebin_spectra = np.zeros_like(spectra)
 
     axis1 = np.arange(npix, dtype=float)  # Reference axis
 
-    # Split loop into two legs: Down (Ref -> 0) and Up (Ref+1 -> NFIB)
-    # Default Identity coeffs for deg=2 (y=x): [0, 1, 0]
-    default_coeffs = np.array([0.0, 1.0, 0.0])
+    for fib in range(nfib):
+        if maskv[fib]:
+            continue
 
-    legs = [
-        range(ref_fib, -1, -1),
-        range(ref_fib + 1, nfib)
-    ]
+        # Get landmarks
+        x_pts = []  # In this fibre
+        y_pts = []  # In ref fibre
 
-    for leg in legs:
-        last_good_coeffs = default_coeffs.copy()
+        for i in range(nlm):
+            p_fib = lmr[fib, i]
+            p_ref = lmr[ref_fib, i]
+            if p_fib > 0 and p_ref > 0:
+                x_pts.append(p_fib)
+                y_pts.append(p_ref)
 
-        for fib in leg:
-            if maskv[fib]:
-                continue
+        if len(x_pts) < 3:
+            rebin_spectra[:, fib] = spectra[:, fib]
+            continue
 
-            # Get landmarks
-            x_pts = []  # In this fibre
-            y_pts = []  # In ref fibre
+        x_pts = np.array(x_pts)
+        y_pts = np.array(y_pts)
 
-            for i in range(nlm):
-                p_fib = lmr[fib, i]
-                p_ref = lmr[ref_fib, i]
-                if p_fib > 0 and p_ref > 0:
-                    x_pts.append(p_fib)
-                    y_pts.append(p_ref)
+        # Fit mapping: ref_pos = f(fib_pos).
+        # We want to rebin current spectra (on fib_pos) to ref_pos grid.
+        # New axis for this fiber: where do the pixels map to on the ref axis?
+        # axis2 = f(axis1)
 
-            coeffs = last_good_coeffs
-            if len(x_pts) >= 3:
-                x_pts = np.array(x_pts)
-                y_pts = np.array(y_pts)
-                # Fit mapping: ref_pos = f(fib_pos).
-                coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 2)
-                last_good_coeffs = coeffs
-            else:
-                logger.warning(f"Synchronise Signals: Fibre {fib} has insufficient landmarks ({len(x_pts)}). Using neighbor coefficients.")
+        # Normalize for stability
+        coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 2)
+        axis2_norm = np.polyval(coeffs, axis1 / npix)
+        axis2 = axis2_norm * npix
 
-            # axis2 = f(axis1)
-            axis2_norm = np.polyval(coeffs, axis1 / npix)
-            axis2 = axis2_norm * npix
+        # Interpolate
+        # We have data on axis1 (0..N-1). We want data on axis1 in the new frame?
+        # Rebinning usually means: Spect[new_x] = Spect[old_x].
+        # If axis2 maps old pixel to new pixel coords.
+        # We want rebin_spectra[x] = spectra[inverse_map(x)]
+        # Or: rebin_spectra at grid 'axis1' corresponds to spectra at 'inverse_map(axis1)'
 
-            isfinite = np.isfinite(spectra[:, fib])
-            if np.any(isfinite):
-                f_interp = interp1d(
-                    axis2[isfinite], spectra[:, fib][isfinite], kind="linear", bounds_error=False, fill_value=0.0
-                )
-                rebin_spectra[:, fib] = f_interp(axis1)
+        # Here `axis2` represents the position in the reference frame corresponding to `axis1` in the current frame.
+        # So `axis2` are the "true" coordinates of the pixels `axis1`.
+        # We want to resample `spectra` (at coords `axis2`) onto the grid `axis1`.
+        # So we interpolating (axis2, spectra) onto (axis1).
+
+        isfinite = np.isfinite(spectra[:, fib])
+
+        f_interp = interp1d(
+            axis2[isfinite], spectra[:, fib][isfinite], kind="linear", bounds_error=False, fill_value=0.0
+        )
+        rebin_spectra[:, fib] = f_interp(axis1)
 
     return rebin_spectra
 
@@ -243,61 +245,51 @@ def synchronise_calibration_last(
 ) -> np.ndarray:
     """
     Synchronise calibration from ref fibre to others.
-    Iterates outwards from ref_fib to propagate calibration on failure.
 
     cal_axis: Calibration of reference fibre (wavelengths).
     """
     synchcal_axes = np.zeros((nfib, npix + 1))
 
     # cal_axis has length NPIX+1 (edges)
+    axis1 = np.arange(npix + 1, dtype=float) - 0.5  # Pixel edges?
+    # In Fortran: AXIS1(I)=FLOAT(I)-1.0. For I=1..NPIX+1. So 0.0 to NPIX.0.
     axis1 = np.arange(npix + 1, dtype=float)
 
-    # Default Identity coeffs for deg=3 (y=x): [0, 0, 1, 0]
-    default_coeffs = np.array([0.0, 0.0, 1.0, 0.0])
+    for fib in range(nfib):
+        if maskv[fib]:
+            continue
 
-    legs = [
-        range(ref_fib, -1, -1),
-        range(ref_fib + 1, nfib)
-    ]
+        x_pts = []  # In this fibre (pixel)
+        y_pts = []  # In ref fibre (pixel)
 
-    for leg in legs:
-        last_good_coeffs = default_coeffs.copy()
+        for i in range(nlm):
+            p_fib = lmr[fib, i]
+            p_ref = lmr[ref_fib, i]
+            if p_fib > 0 and p_ref > 0:
+                x_pts.append(p_fib)
+                y_pts.append(p_ref)
 
-        for fib in leg:
-            if maskv[fib]:
-                continue
+        if len(x_pts) < 3:
+            synchcal_axes[fib, :] = cal_axis  # Fallback
+            continue
 
-            x_pts = []  # In this fibre (pixel)
-            y_pts = []  # In ref fibre (pixel)
+        x_pts = np.array(x_pts)
+        y_pts = np.array(y_pts)
 
-            for i in range(nlm):
-                p_fib = lmr[fib, i]
-                p_ref = lmr[ref_fib, i]
-                if p_fib > 0 and p_ref > 0:
-                    x_pts.append(p_fib)
-                    y_pts.append(p_ref)
+        # Map this fibre pixels -> ref fibre pixels
+        coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 3)  # Cubic
 
-            coeffs = last_good_coeffs
-            if len(x_pts) >= 3:
-                x_pts = np.array(x_pts)
-                y_pts = np.array(y_pts)
-                # Map this fibre pixels -> ref fibre pixels
-                coeffs = robust_polyfit(x_pts / npix, y_pts / npix, 3)  # Cubic
-                last_good_coeffs = coeffs
-            else:
-                logger.warning(f"Synchronise Calibration: Fibre {fib} has insufficient landmarks ({len(x_pts)}). Using neighbor coefficients.")
+        axis1_norm = axis1 / npix
+        axis2_norm = np.polyval(coeffs, axis1_norm)
+        axis2 = axis2_norm * npix
 
-            axis1_norm = axis1 / npix
-            axis2_norm = np.polyval(coeffs, axis1_norm)
-            axis2 = axis2_norm * npix
+        # axis2 contains coordinates in Ref Fibre Pixels.
+        # We know Ref Fibre Pixels -> Wavelength (cal_axis).
+        # Interpolate Wavelength at axis2.
 
-            # axis2 contains coordinates in Ref Fibre Pixels.
-            # We know Ref Fibre Pixels -> Wavelength (cal_axis).
-            # Interpolate Wavelength at axis2.
-
-            f_interp = interp1d(
-                axis1, cal_axis, kind="linear", bounds_error=False, fill_value="extrapolate"
-            )
-            synchcal_axes[fib, :] = f_interp(axis2)
+        f_interp = interp1d(
+            axis1, cal_axis, kind="linear", bounds_error=False, fill_value="extrapolate"
+        )
+        synchcal_axes[fib, :] = f_interp(axis2)
 
     return synchcal_axes
