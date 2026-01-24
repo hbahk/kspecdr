@@ -121,6 +121,9 @@ def make_tlm_other(
     order, pk_search_method, do_distortion, sparse_fibs, experimental, qad_pksearch = (
         set_instrument_specific_params(instrument_code, args)
     )
+    logger.debug(
+        f"order: {order}, pk_search_method: {pk_search_method}, do_distortion: {do_distortion}, sparse_fibs: {sparse_fibs}, experimental: {experimental}, qad_pksearch: {qad_pksearch}"
+    )
 
     # Step 2: Convert fibre types to trace status
     fibre_has_trace = convert_fibre_types_to_trace_status(
@@ -493,6 +496,7 @@ def detect_traces(
 
         # Store peak information
         npks = len(peaks)
+        logger.debug(f"npks: {npks}")
         if npks > 0:
             p_pks = peaks.astype(float)
             pk_grid[stepno, :npks] = p_pks
@@ -501,6 +505,8 @@ def detect_traces(
         if stepno == nsteps // 2:
             rep_slice = col_data.copy()
             rep_pkpos[:npks] = p_pks
+
+    logger.debug(f"pk_grid shape: {pk_grid.shape}")
 
     # Step 2: Link peak locations into fiber traces
     logger.info("Linking trace data to build fiber Tramline Map...")
@@ -677,7 +683,7 @@ def _link_peaks_to_traces_mtt(
     min_fraction: float = 0.5,
     gap_limit: Optional[int] = None,
     missing_cost: Optional[float] = None,
-    use_float32: bool = True,
+    use_float32: bool = False,
 ) -> Tuple[int, np.ndarray]:
     """
     Link per-step peak detections into traces using a Fortran-like
@@ -739,7 +745,9 @@ def _link_peaks_to_traces_mtt(
         missing_cost = float(np.sqrt(max_displacement**2 + gap_limit**2) * 1.05)
 
     # Output buffer: we will build tracks here, then filter+sort at the end.
-    trace_pts = np.zeros((max_ntraces, nsteps), dtype=np.float32 if use_float32 else np.float64)
+    trace_pts = np.zeros(
+        (max_ntraces, nsteps), dtype=np.float32 if use_float32 else np.float64
+    )
 
     # Track state arrays (size max_ntraces; only first ntracks are active)
     last_step = np.full(max_ntraces, -1, dtype=np.int32)
@@ -759,6 +767,12 @@ def _link_peaks_to_traces_mtt(
             last_pos[:n_init] = peaks[:n_init]
             ntracks = n_init
             break
+
+    logger.debug(f"start_seq: {start_seq}")
+    logger.debug(f"ntracks: {ntracks}")
+    logger.debug(f"trace_pts shape: {trace_pts.shape}")
+    logger.debug(f"last_step: {last_step}")
+    logger.debug(f"last_pos: {last_pos}")
 
     if start_seq < 0:
         return 0, np.zeros((max_ntraces, nsteps), dtype=float)
@@ -803,7 +817,7 @@ def _link_peaks_to_traces_mtt(
 
         cand_trk = trk_idx_all[cand_trk_mask]
         cand_last_pos = last_pos[cand_trk]  # shape (m,)
-        cand_gaps = gaps[cand_trk]          # shape (m,)
+        cand_gaps = gaps[cand_trk]  # shape (m,)
 
         # ---- Build proximity associations (vectorized) ----
         # dx matrix: shape (m_tracks, n_points)
@@ -840,10 +854,10 @@ def _link_peaks_to_traces_mtt(
             continue
 
         lap_trk = cand_trk[lap_trk_mask]  # original track indices
-        lap_peaks = peaks[lap_pt_mask]    # point positions
+        lap_peaks = peaks[lap_pt_mask]  # point positions
 
         # Reduced dx/viable arrays for LAP
-        dx_sub = (lap_peaks[None, :] - last_pos[lap_trk][:, None])
+        dx_sub = lap_peaks[None, :] - last_pos[lap_trk][:, None]
         abs_dx_sub = np.abs(dx_sub)
 
         # Also apply gap gating (already ensured by cand_trk_mask, but keep explicit)
@@ -1316,7 +1330,7 @@ def predict_wavelength_from_dispersion(
         logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
         raise
     dist_from_midpix = np.linspace(0.5, nspec + 0.5, nspec) - midpix
-    wavevec = lambdac + dispers * dist_from_midpix # Angstroms
+    wavevec = lambdac + dispers * dist_from_midpix  # Angstroms
     wavelength_data = wavevec.reshape(nspec, 1).repeat(nf, axis=1)
 
     return wavelength_data
@@ -1656,6 +1670,102 @@ def _select_regular_run_by_spacing(
     return best_run if best_run is not None else p[:expected_n]
 
 
+def _select_regular_run_by_spacing_and_height(
+    peaks: np.ndarray,
+    expected_n: int,
+    heights: Optional[np.ndarray] = None,
+    *,
+    height_weight: float = 0.3,
+    min_height_quantile: float = 0.0,
+) -> np.ndarray:
+    """
+    Select expected_n peaks from peaks such that:
+      1) Adjacent intervals are as regular as possible (primary objective),
+      2) If heights are provided, prefer runs with larger total peak height.
+
+    Parameters
+    ----------
+    peaks : np.ndarray
+        Peak positions (1D).
+    expected_n : int
+        Number of peaks to select.
+    heights : Optional[np.ndarray]
+        Peak heights aligned with `peaks`. If None, selection is spacing-only.
+    height_weight : float
+        Weight of height term relative to regularity term.
+        0.0 -> identical to the original spacing-only behavior.
+        Typical range: 0.1 ~ 1.0 (tune depending on your data).
+    min_height_quantile : float
+        Optionally ignore extremely tiny peaks globally by thresholding heights
+        (e.g., 0.05 keeps top 95% by height). Set 0.0 to disable.
+
+    Returns
+    -------
+    np.ndarray
+        Selected run of length expected_n (sorted by position).
+    """
+    if len(peaks) <= expected_n:
+        return np.sort(peaks)
+
+    p = np.asarray(peaks)
+    if heights is not None:
+        h = np.asarray(heights)
+        if h.shape != p.shape:
+            raise ValueError("heights must have the same shape as peaks")
+    else:
+        h = None
+
+    # Sort by peak position
+    order = np.argsort(p)
+    p = p[order]
+    if h is not None:
+        h = h[order]
+
+        # Optional global height threshold to remove ultra-tiny junk peaks
+        if min_height_quantile > 0.0:
+            thr = np.quantile(h, min_height_quantile)
+            keep = h >= thr
+            # keep alignment
+            p = p[keep]
+            h = h[keep]
+            if len(p) <= expected_n:
+                return p  # already sorted
+
+    best = None
+    best_final = np.inf
+
+    # Normalize heights for comparable scaling across frames
+    if h is not None:
+        # robust scale: divide by median of top-k heights (avoid domination by one huge peak)
+        k = min(10, len(h))
+        scale = np.median(np.sort(h)[-k:]) if k > 0 else 1.0
+        if scale <= 0:
+            scale = 1.0
+
+    for i in range(0, len(p) - expected_n + 1):
+        run = p[i : i + expected_n]
+        d = np.diff(run)
+        d_med = np.median(d)
+        reg = np.std(d / d_med) if d_med > 0 else np.inf
+
+        if h is None:
+            final = reg
+        else:
+            run_h = h[i : i + expected_n]
+            # Height term: larger total height -> smaller penalty
+            # Use negative log to make it smooth and not overly sensitive.
+            sum_h = float(np.sum(run_h) / scale)
+            height_penalty = -np.log(max(sum_h, 1e-12))
+
+            final = reg + height_weight * height_penalty
+
+        if final < best_final:
+            best_final = final
+            best = run
+
+    return best if best is not None else p[:expected_n]
+
+
 def _robust_sigma_mad(x: np.ndarray) -> float:
     """
     Robust noise estimate using MAD.
@@ -1767,25 +1877,28 @@ def _wavelet_peak_detection(
         return np.array([], dtype=float)
 
     peak_positions = 0.5 * (lhs_zc + rhs_zc)
+    logger.debug(f"# of peaks before width filtering: {len(peak_positions)}")
 
     # Step 5: filter out peaks with widths too far from the median width
     peak_positions, widths = _filter_by_width(
         peak_positions, widths, min_keep=max_peaks // 2, rel_tol=width_rel_tol
     )
+    logger.debug(f"# of peaks after width filtering: {len(peak_positions)}")
 
-    # Step 6: select the most regular run of peaks
-    if max_peaks is not None and len(peak_positions) > max_peaks:
-        peak_positions = _select_regular_run_by_spacing(
-            peak_positions, expected_n=max_peaks
-        )
-
-    # Step 7: last tie-breaking: select the top max_peaks peaks by height
+    # Step 6: select the most regular run of peaks + height preference
     if max_peaks is not None and len(peak_positions) > max_peaks:
         peak_heights = col_data[
             np.clip(peak_positions.astype(int), 0, len(col_data) - 1)
         ]
-        order = np.argsort(peak_heights)[::-1]
-        peak_positions = peak_positions[order[:max_peaks]]
+        peak_positions = _select_regular_run_by_spacing_and_height(
+            peak_positions,
+            expected_n=max_peaks,
+            heights=peak_heights,
+            height_weight=0.1,         # tune: 0.1~0.5 typical
+            min_height_quantile=0.2,   # optionally 0.05~0.2 to drop tiny junk peaks
+        )
+
+        logger.debug(f"# of peaks after regular run selection: {len(peak_positions)}")
 
     return np.asarray(peak_positions, dtype=float)
 
