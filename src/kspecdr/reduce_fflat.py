@@ -22,6 +22,39 @@ def reduce_fflat(args: Dict[str, Any]):
     """
     Reduces a raw multi-fibre flat file to produce im(age), ex(tracted) and
     red(uced) fflat files.
+
+    This routine performs the complete flat field reduction workflow:
+    1. Preprocessing (IM creation, Tramline Mapping, Extraction)
+    2. Copying Extraction to Reduced file
+    3. Scrunching (rebinning to linear wavelength scale)
+    4. Averaging and Normalizing (creating a master flat response)
+    5. Reverse Scrunching (back to pixel space)
+    6. Extrapolation or B-Spline Smoothing
+    7. Normalizing the original extracted frame by the master flat
+
+    Parameters
+    ----------
+    args : dict
+        Argument dictionary containing the following keys:
+        - RAW_FILENAME (str): Input raw file.
+        - IMAGE_FILENAME (str): Output IM file.
+        - EXTRAC_FILENAME (str): Output EX file.
+        - OUTPUT_FILENAME (str): Output RED file.
+        - TLMAP_FILENAME (str): Tramline map file.
+        - WAVEL_FILENAME (str): Wavelength calibration (Arc) file.
+        - DO_TLMAP (bool, optional): Whether to create IM/TLM. Default True.
+        - DO_EXTRA (bool, optional): Whether to create EX. Default True.
+        - DO_REDFL (bool, optional): Whether to perform reduction. Default True.
+        - MAKE_TLM_ONLY (bool, optional): If True, stop after TLM. Default False.
+        - LAF_FLAG (bool, optional): If True, use local averaging. Default False.
+        - LAF_PAR (int, optional): Window size for local averaging. Default 10.
+        - TRUNCFLAT (bool, optional): If True, use truncated range. Default False.
+        - USEFLATSTART (int, optional): Start pixel for truncation. Default 1.
+        - USEFLATEND (int, optional): End pixel for truncation. Default 2048.
+        - BSSMOOTH (bool, optional): If True, perform B-Spline smoothing. Default False.
+        - BSSNPARS (int, optional): Number of knots for B-Spline. Default 16.
+        - BSSNSIGM (float, optional): Sigma rejection threshold for B-Spline. Default 6.0.
+        - VERBOSE (bool, optional): Verbosity flag. Default False.
     """
     # 1. Initialization
     raw_fname = args.get('RAW_FILENAME')
@@ -123,9 +156,21 @@ def reduce_fflat(args: Dict[str, Any]):
     logger.info(f"Fibre Flat Frame Reduced: {red_fname}")
 
 
-def do_aff(filename, args):
+def do_aff(filename: str, args: Dict[str, Any]):
     """
-    Normalise and average the spectra.
+    Normalise and average the spectra in the given file.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the FITS file to process (modified in place).
+    args : dict
+        Arguments containing:
+        - LAF_FLAG (bool): Use local averaging if True.
+        - LAF_PAR (int): Window size for local averaging.
+        - TRUNCFLAT (bool): Use truncated flat range.
+        - USEFLATSTART (int): Start pixel for truncation.
+        - USEFLATEND (int): End pixel for truncation.
     """
     laf_flag = args.get('LAF_FLAG', False)
     laf_par = args.get('LAF_PAR', 10)
@@ -146,9 +191,27 @@ def do_aff(filename, args):
 
         f.write_image_data(data.T)
 
-def cmfff_aver(data, goodfib, laf_flag, laf_par, trunc_flat, start_pix, end_pix):
+def cmfff_aver(data: np.ndarray, goodfib: np.ndarray, laf_flag: bool, laf_par: int, trunc_flat: bool, start_pix: int, end_pix: int):
     """
     Normalizes fibers by median, then averages them.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Spectral data array (NSPEC, NFIB). Modified in place.
+    goodfib : np.ndarray
+        Boolean array indicating good fibers.
+    laf_flag : bool
+        If True, use local averaging (moving window across fibers).
+        If False, use global averaging across all good fibers.
+    laf_par : int
+        Window half-width for local averaging (used if laf_flag is True).
+    trunc_flat : bool
+        If True, calculate median only within the specified pixel range.
+    start_pix : int
+        Start pixel index (1-based from args, converted to 0-based implicitly via mask) for truncation.
+    end_pix : int
+        End pixel index for truncation.
     """
     nx, nf = data.shape
 
@@ -191,9 +254,18 @@ def cmfff_aver(data, goodfib, laf_flag, laf_par, trunc_flat, start_pix, end_pix)
         for fib in range(nf):
             data[:, fib] = ypix
 
-def do_all(data, goodfib, ypix):
+def do_all(data: np.ndarray, goodfib: np.ndarray, ypix: np.ndarray):
     """
-    Average across all fibers with sigma clipping.
+    Average across all good fibers with iterative sigma clipping.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Spectral data (NSPEC, NFIB).
+    goodfib : np.ndarray
+        Boolean array of good fibers.
+    ypix : np.ndarray
+        Output averaged spectrum (NSPEC).
     """
     nx, nf = data.shape
     clip = 5.0
@@ -219,10 +291,20 @@ def do_all(data, goodfib, ypix):
     final_mean = np.ma.mean(masked_data, axis=1).filled(np.nan)
     ypix[:] = final_mean
 
-def do_local(data, goodfib, laf_par, ypix):
+def do_local(data: np.ndarray, goodfib: np.ndarray, laf_par: int, ypix: np.ndarray):
     """
-    Local averaging using window +/- laf_par.
-    Updates data in place.
+    Local averaging using a moving window of fibers (+/- laf_par).
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Spectral data (NSPEC, NFIB). Modified in place with local averages.
+    goodfib : np.ndarray
+        Boolean array of good fibers.
+    laf_par : int
+        Half-width of the fiber window.
+    ypix : np.ndarray
+        Output array to store the central fiber's average (for plotting/reference).
     """
     nx, nf = data.shape
     clip = 5.0
@@ -251,9 +333,14 @@ def do_local(data, goodfib, laf_par, ypix):
         if f == nf // 2:
              ypix[:] = final_mean
 
-def cmfff_extrap(data):
+def cmfff_extrap(data: np.ndarray):
     """
-    Linearly extrapolate ends.
+    Linearly extrapolate the ends of the spectra to cover bad pixels (NaNs).
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Spectral data (NSPEC, NFIB). Modified in place.
     """
     nx, nf = data.shape
     nf_fit = 5
@@ -282,9 +369,24 @@ def cmfff_extrap(data):
                 p = np.polyfit(fit_idx, spec[fit_idx], 1)
                 data[last+1:, f] = np.polyval(p, x_idx[last+1:])
 
-def cmfff_norm(red_data, red_var, aff_data, trunc_flat, start_pix, end_pix):
+def cmfff_norm(red_data: np.ndarray, red_var: np.ndarray, aff_data: np.ndarray, trunc_flat: bool, start_pix: int, end_pix: int):
     """
-    Normalize RED data by AFF data.
+    Normalize the reduced data by the Average Flat Field (AFF).
+
+    Parameters
+    ----------
+    red_data : np.ndarray
+        Reduced image data (NSPEC, NFIB). Modified in place.
+    red_var : np.ndarray
+        Reduced variance data (NSPEC, NFIB). Modified in place.
+    aff_data : np.ndarray
+        Average Flat Field data (NSPEC, NFIB).
+    trunc_flat : bool
+        If True, normalization by median is restricted to a pixel range.
+    start_pix : int
+        Start pixel for median normalization range.
+    end_pix : int
+        End pixel for median normalization range.
     """
     nx, nf = red_data.shape
 
@@ -319,9 +421,18 @@ def cmfff_norm(red_data, red_var, aff_data, trunc_flat, start_pix, end_pix):
         else:
             red_data[:, f] = np.nan
 
-def bs_smooth_redflat(filename, args):
+def bs_smooth_redflat(filename: str, args: Dict[str, Any]):
     """
-    B-Spline Smoothing.
+    Perform B-Spline Smoothing on the reduced flat field.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the reduced FITS file (modified in place).
+    args : dict
+        Arguments containing:
+        - BSSNPARS (int): Number of knots (default 16).
+        - BSSNSIGM (float): Sigma rejection threshold (default 6.0).
     """
     npars = args.get('BSSNPARS', 16)
     nsig = args.get('BSSNSIGM', 6.0)

@@ -9,6 +9,16 @@ def scrunch_open_arc(args):
     """
     Returns the filename of the arc file from args.
     Corresponds to SCRUNCH_OPEN_ARC in Fortran.
+
+    Parameters
+    ----------
+    args : dict
+        Arguments dictionary containing 'WAVEL_FILENAME'.
+
+    Returns
+    -------
+    str or None
+        The filename of the arc file, or None if not found/empty.
     """
     fname = args.get('WAVEL_FILENAME')
     if not fname:
@@ -90,9 +100,9 @@ def scrunch_from_arc_id(obj_filename, arc_filename, args, reverse=False):
     obj_filename : str
         Path to the object FITS file to scrunch (modified in place)
     arc_filename : str
-        Path to the arc FITS file containing WAVELA extension
+        Path to the arc FITS file containing WAVELA extension.
     args : dict
-        Arguments dictionary
+        Arguments dictionary (unused in logic but kept for interface compatibility).
     reverse : bool
         If True, un-scrunch (Linear -> Pixel). Default False (Pixel -> Linear).
     """
