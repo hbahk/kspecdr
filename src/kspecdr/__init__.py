@@ -9,9 +9,10 @@ from . import extract
 from . import wavecal
 from . import constants
 from .reduce_object import reduce_object
+from .reduce_fflat import reduce_fflat
 
 import logging
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__all__ = ["io", "tlm", "inst", "preproc", "extract", "wavecal", "constants", "reduce_object"]
+__all__ = ["io", "tlm", "inst", "preproc", "extract", "wavecal", "constants", "reduce_object", "reduce_fflat"]
