@@ -8,14 +8,11 @@ raw science file to produce im(age), ex(tracted), and red(uced) science files.
 
 import logging
 import shutil
-import os
-from typing import Dict, Any, Optional
-from pathlib import Path
+from typing import Dict, Any
 
 from .preproc.make_im import make_im
 from .extract.make_ex import make_ex
-from .io.image import ImageFile
-from .utils.args import init_args
+from .utils.args import init_args, validate_reduce_object_args
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +59,7 @@ def reduce_object(args: Dict[str, Any]) -> None:
     # ----------------------------------
     # SANITY CHECK THE SUPPLIED SDS ARGS
     # ----------------------------------
-    reduce_object_arg_checks(args)
+    validate_reduce_object_args(args)
 
     # Output directory handling
     out_dirname = args.get('OUT_DIRNAME', 'NONE')
@@ -279,11 +276,6 @@ def reduce_object(args: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------
 # Placeholder Functions
 # ---------------------------------------------------------------------
-
-
-def reduce_object_arg_checks(args: Dict[str, Any]) -> None:
-    """Sanity check the supplied args"""
-    raise NotImplementedError("reduce_object_arg_checks not implemented")
 
 def clean_im(args: Dict[str, Any]) -> None:
     """Cleanup the IMAGE Frame for cosmic rays using residual map"""
