@@ -40,6 +40,8 @@ from ..constants import (
     INST_ISOPLANE,
     MAX__NFIBRES,
 )
+from ..utils.args import init_args
+from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,7 @@ def make_tlm(args: Dict[str, Any]) -> None:
         - 'IMAGE_FILENAME': Input image file path
         - 'TLMAP_FILENAME': Output tramline map file path (optional)
     """
+    args = init_args(args)
     im_fname = args.get("IMAGE_FILENAME")
     if not im_fname:
         raise ValueError("IMAGE_FILENAME is required")
@@ -112,7 +115,9 @@ def make_tlm_other(
     logger.info("Starting tramline map generation for non-2DF instrument")
 
     # Step 0: Pre-amble - Read image data and get instrument information
-    img_data, var_data, fibre_types = read_instrument_data(im_file, instrument_code)
+    img_data, var_data, fibre_types = read_instrument_data(
+        im_file, instrument_code, args
+    )
 
     # Extract SPECTID from header and add to args for matching
     spectid = im_file.get_header_value("SPECTID", "RED")
@@ -195,7 +200,7 @@ def make_tlm_other(
 
 
 def read_instrument_data(
-    im_file: ImageFile, instrument_code: int
+    im_file: ImageFile, instrument_code: int, args: Dict[str, Any]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Read instrument data from image file.
@@ -214,7 +219,9 @@ def read_instrument_data(
     """
     img_data = im_file.read_image_data()
     var_data = im_file.read_variance_data()
-    fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES)
+    overrides = get_override_from_args(im_file.hdul[0].header.get("ARGS", {}))
+    overrides = get_override_from_args(args)
+    fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES, overrides=overrides)
     return img_data, var_data, fibre_types
 
 

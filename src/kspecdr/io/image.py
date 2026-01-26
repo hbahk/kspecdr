@@ -415,7 +415,11 @@ class ImageFile:
 
         self.hdul[0].header[keyword] = value
 
-    def read_fiber_types(self, max_nfibres: int) -> Tuple[np.ndarray, int]:
+    def read_fiber_types(
+        self,
+        max_nfibres: int,
+        overrides: Optional[Dict[int, str]] = None,
+    ) -> Tuple[np.ndarray, int]:
         """
         Read fibre type information.
 
@@ -441,6 +445,12 @@ class ImageFile:
                 max_nfibres, "N", dtype="U1"
             )  # Default to 'N' (Not used)
             nf = 0
+
+        if overrides:
+            for fibno, ftype in overrides.items():
+                idx = fibno - 1
+                if 0 <= idx < len(fiber_types):
+                    fiber_types[idx] = ftype
 
         return fiber_types, nf
 

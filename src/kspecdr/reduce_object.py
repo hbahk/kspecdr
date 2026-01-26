@@ -15,6 +15,7 @@ from pathlib import Path
 from .preproc.make_im import make_im
 from .extract.make_ex import make_ex
 from .io.image import ImageFile
+from .utils.args import init_args
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def reduce_object(args: Dict[str, Any]) -> None:
         - VERBOSE: (Optional) Verbosity
         - USE_GENCAL: (Optional) Use general calibration (Skyline test)
         - TST_SKYCAL: (Optional) Test skyline calibration
-        - INC_RWSS: (Optional) Include RWSS
+        - INC_RWSS: (Optional) Include RWSS (Reduced Without Sky Subtraction)
         - SKYSPRSMP: (Optional) Super sky subtraction
         - CALIBFLUX: (Optional) Flux calibration
         - TRANSFUNC: (Optional) Transfer function correction
@@ -56,7 +57,7 @@ def reduce_object(args: Dict[str, Any]) -> None:
     # ----------------------------------
     # INITIALISATION
     # ----------------------------------
-    initialise_from_args(args)
+    init_args(args)
 
     # ----------------------------------
     # SANITY CHECK THE SUPPLIED SDS ARGS
@@ -195,14 +196,7 @@ def reduce_object(args: Dict[str, Any]) -> None:
     # Scrunch this object frame
     scrunch_object_frame(red_filename, args)
 
-    # Do the Kola shift correct (if instrument is KOALA and if requested)
-    koala_drift_correct(red_filename, args)
-
-    # Remove WAVELA HDU from output red(uced) file put there by CREATEBYCOPY
-    # N.B. WAVELA HDU is used by SCRUNCH_2ARC_CAL/SCRUNCH()
-    tdfio_wave_delete(red_filename)
-
-    # Fibre-thoughput calibrate if requested
+    # Fiber-thoughput calibrate if requested
     # (only used for sky subtraction and makes no sense for N&S data)
     nsflg = tdfio_nod_shuffle(red_filename)
     if nsflg == 0:
@@ -286,15 +280,6 @@ def reduce_object(args: Dict[str, Any]) -> None:
 # Placeholder Functions
 # ---------------------------------------------------------------------
 
-def initialise_from_args(args: Dict[str, Any]) -> None:
-    """Call up any enviromental initialisations defined in the args"""
-    # Placeholder: Might set global flags or config
-    # For now, we assume this is handled or not needed yet.
-    # raise NotImplementedError("initialise_from_args not implemented")
-    # Actually, Fortran calls this. It might be important for setup.
-    # Given instructions: "missing functions... TODO placeholder to NotImplementedError"
-    # I will stick to that.
-    raise NotImplementedError("initialise_from_args not implemented")
 
 def reduce_object_arg_checks(args: Dict[str, Any]) -> None:
     """Sanity check the supplied args"""
@@ -319,18 +304,6 @@ def cmfspec_flatfield(filename: str, args: Dict[str, Any]) -> None:
 def scrunch_object_frame(filename: str, args: Dict[str, Any]) -> None:
     """Scrunch this object frame"""
     raise NotImplementedError("scrunch_object_frame not implemented")
-
-def koala_drift_correct(filename: str, args: Dict[str, Any]) -> None:
-    """Do the Kola shift correct"""
-    raise NotImplementedError("koala_drift_correct not implemented")
-
-def tdfio_wave_delete(filename: str) -> None:
-    """Remove WAVELA HDU from output reduced file"""
-    # This is a simple FITS operation, but I'll placeholder it as per instructions
-    # unless strictly required to function.
-    # User said: "Functions requiring more info -> NotImplementedError".
-    # I know how to delete an HDU. But maybe safe to placeholder.
-    raise NotImplementedError("tdfio_wave_delete not implemented")
 
 def tdfio_nod_shuffle(filename: str) -> int:
     """Check for Nod & Shuffle data. Returns flag (0 if not N&S?)."""

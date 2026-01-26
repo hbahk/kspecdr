@@ -15,6 +15,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import warnings
 
 from ..io.image import ImageFile
+from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,8 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
             nfib, nspec_tlm = tlm_data.shape
 
             # Read fiber types
-            fiber_types, _ = im_file.read_fiber_types(MAX_NFIBRES)
+            overrides = get_override_from_args(args)
+            fiber_types, _ = im_file.read_fiber_types(MAX_NFIBRES, overrides=overrides)
             # Note: 2dfdr reads fiber types from IM file usually, as TLM might not have them updated?
 
             # Get MWIDTH from TLM header (Median FWHM)

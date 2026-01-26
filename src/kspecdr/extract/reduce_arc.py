@@ -26,6 +26,8 @@ from ..wavecal.calibrate import (
     analyse_arc_signal
 )
 from ..wavecal.arc_io import read_arc_file
+from ..utils.args import init_args
+from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
     """
 
     # 1. Initialize
+    args = init_args(args)
     raw_filename = args.get("RAW_FILENAME")
     im_filename = args.get("IMAGE_FILENAME")
     ex_filename = args.get("EXTRAC_FILENAME")
@@ -101,7 +104,8 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
             wave_axis[0] = wave_axis[1] - (wave_axis[2] - wave_axis[1])
             wave_axis[nx] = wave_axis[nx - 1] + (wave_axis[nx - 1] - wave_axis[nx - 2])
 
-            fiber_types, _ = red_file.read_fiber_types(MAX__NFIBRES)
+            overrides = get_override_from_args(args)
+            fiber_types, _ = red_file.read_fiber_types(MAX__NFIBRES, overrides=overrides)
             goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
 
             lamp = args.get("LAMPNAME", "")
@@ -202,7 +206,8 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
         # Read goodfibs for reference fiber logic
         with ImageFile(ex_filename, mode="READ") as ex_file:
             nx, nf = ex_file.get_size()
-            fiber_types, _ = ex_file.read_fiber_types(MAX__NFIBRES)
+            overrides = get_override_from_args(args)
+            fiber_types, _ = ex_file.read_fiber_types(MAX__NFIBRES, overrides=overrides)
             goodfib = np.array([ft in ["P", "S"] for ft in fiber_types[:nf]])
 
             meta["nx"] = nx

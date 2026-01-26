@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional, Tuple
 from scipy.interpolate import LSQUnivariateSpline
 
 from .io.image import ImageFile
+from .utils.args import init_args
+from .utils.fiber import get_override_from_args
 from .preproc.make_im import make_im
 from .extract.make_ex import make_ex
 from .tlm.make_tlm import make_tlm
@@ -57,6 +59,7 @@ def reduce_fflat(args: Dict[str, Any]):
         - VERBOSE (bool, optional): Verbosity flag. Default False.
     """
     # 1. Initialization
+    args = init_args(args)
     raw_fname = args.get('RAW_FILENAME')
     im_fname = args.get('IMAGE_FILENAME')
     ex_fname = args.get('EXTRAC_FILENAME')
@@ -145,9 +148,9 @@ def reduce_fflat(args: Dict[str, Any]):
         if bs_smooth:
              bs_smooth_redflat(red_fname, args)
 
-        # Set class
-        with ImageFile(red_fname, mode='UPDATE') as red_file:
-             red_file.set_class("REDUCED")
+        # # Set class
+        # with ImageFile(red_fname, mode='UPDATE') as red_file:
+        #      red_file.set_class("REDUCED")
 
     finally:
         if os.path.exists(tmp_fname):
@@ -182,7 +185,8 @@ def do_aff(filename: str, args: Dict[str, Any]):
     with ImageFile(filename, mode='UPDATE') as f:
         data = f.read_image_data().T # (NSPEC, NFIB)
         nx, nf = data.shape
-        fiber_types, _ = f.read_fiber_types(nf)
+        overrides = get_override_from_args(args)
+        fiber_types, _ = f.read_fiber_types(nf, overrides=overrides)
 
         goodfib = np.array([ft in ['P', 'S'] for ft in fiber_types[:nf]])
         logger.info(f"{np.sum(goodfib)} good fibres used to make flat field")
