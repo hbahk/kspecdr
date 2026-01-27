@@ -16,6 +16,121 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def get_isoplane_readout_settings(header: fits.Header) -> dict:
+    """
+    Determine readout gain/noise from raw header.
+
+    Returns
+    -------
+    dict
+        {
+            "gain": float,
+            "noise": float,
+            "speed_hz": float or None,
+            "gain_mode": str or None,
+            "noise_mode": str or None,
+        }
+    """
+    readout_modes = {
+        "LOW": {
+            "2MHZ": {
+                "LOW": {"gain": 4.09, "noise": 16.03},
+                "MEDIUM": {"gain": 2.10, "noise": 15.88},
+                "HIGH": {"gain": 1.12, "noise": 15.42},
+            },
+            "100KHZ": {
+                "LOW": None,
+                "MEDIUM": None,
+                "HIGH": {"gain": 1.12, "noise": 4.48},
+            },
+        },
+        "HIGH": {
+            "2MHZ": {
+                "LOW": {"gain": 15.37, "noise": 41.34},
+                "MEDIUM": {"gain": 7.73, "noise": 37.57},
+                "HIGH": {"gain": 3.74, "noise": 35.08},
+            },
+            "100KHZ": {
+                "LOW": None,
+                "MEDIUM": None,
+                "HIGH": None,
+            },
+        },
+    }
+    default_key = ("LOW", "2MHZ", "LOW")
+
+    gain_mode = None
+    noise_mode = None
+
+    speed_mhz = header.get("PI CAMERA ADC SPEED", None)
+
+    gain_val = header.get("PI CAMERA ADC ANALOGGAIN", None)
+    if gain_val:
+        g = str(gain_val).strip().upper()
+        if "HIGH" in g:
+            gain_mode = "HIGH"
+        elif "MEDIUM" in g:
+            gain_mode = "MEDIUM"
+        elif "LOW" in g:
+            gain_mode = "LOW"
+
+    noise_val = header.get("PI CAMERA ADC QUALITY", None)
+    if noise_val:
+        n = str(noise_val).strip().upper()
+        if "LOWNOISE" in n:
+            noise_mode = "LOW"
+        elif "HIGHCAPACITY" in n:
+            noise_mode = "HIGH"
+
+    alien_speed = False
+    if speed_mhz is None:
+        speed_key = default_key[1]
+    elif speed_mhz == 0.1:
+        speed_key = "100KHZ"
+    elif speed_mhz == 2:
+        speed_key = "2MHZ"
+    else:
+        speed_key = default_key[1]
+        alien_speed = True
+
+    noise_key = noise_mode or default_key[0]
+    gain_key = gain_mode or default_key[2]
+
+    if speed_mhz is None or gain_mode is None or noise_mode is None:
+        logger.warning(
+            "Readout settings not fully detected; using default ADC_SPEED/RO_GAIN/RO_NOISE."
+        )
+        selected = readout_modes[default_key[0]][default_key[1]][default_key[2]]
+    else:
+        if alien_speed:
+            logger.warning(
+                f"Unsupported ADC speed in header: {speed_mhz} MHz;"
+                "using default speed 2MHz"
+            )
+
+        selected = readout_modes.get(noise_key, {}).get(speed_key, {}).get(gain_key)
+        if selected is None:
+            raise ValueError(
+                "Readout mode not yet calibrated: "
+                f"noise={noise_key}, speed={speed_key}, gain={gain_key}"
+            )
+
+        logger.info(
+            "Readout settings: speed=%.0f MHz, gain=%s, noise=%s",
+            speed_mhz,
+            gain_key,
+            noise_key,
+        )
+
+    return {
+        "gain": selected["gain"],
+        "noise": selected["noise"],
+        "speed_mhz": speed_mhz,
+        "gain_mode": gain_mode,
+        "noise_mode": noise_mode,
+    }
+
+
 def add_fiber_table(hdul: fits.HDUList, n_fibers: int, fiber_table: Table = None) -> None:
     """
     Add a dummy fiber table to the HDUList.
@@ -190,11 +305,13 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     # 1. Instrument Name
     new_header["INSTRUME"] = ("ISOPLANE", "KSPEC Backup Spectrograph")
 
-    # 2. Gain and Noise (Measured values for Low Noise / Low Gain)
-    # RDN = 16.03 e- rms, Gain = 4.09 e-/ADU
-    # TODO: change this to the dict-based calls depending on the CCD settings (IQ, Gain mode)
-    new_header["RO_GAIN"] = (4.09, "Readout Amplifer gain (e-/ADU)")
-    new_header["RO_NOISE"] = (16.03, "Readout noise (electrons)")
+    # 2. Gain and Noise (Measured values per readout mode)
+    readout = get_isoplane_readout_settings(header)
+    new_header["RO_GAIN"] = (
+        readout["gain"],
+        "Readout Amplifer gain (e-/ADU)",
+    )
+    new_header["RO_NOISE"] = (readout["noise"], "Readout noise (electrons)")
 
     # 3. Exposure Time
     # Raw header seems to have EXPOSURETIME in milliseconds in HIERARCH keywords
