@@ -457,6 +457,26 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
 
 
 def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str, n_fibers: int = None, fiber_table: Table = None) -> None:
+    """
+    Convert a PIXIS/Isoplane raw FITS file into a kspecdr-compatible file.
+
+    This reads the input header, applies standard keyword conversions, attaches
+    a fiber table, normalizes the data to a single 2D frame, applies requested
+    orientation flips, and writes the result to a new FITS file.
+
+    Parameters
+    ----------
+    fpath : str
+        Input raw FITS filename.
+    output_fpath : str
+        Output converted FITS filename.
+    ndfclass : str
+        NDFCLASS to stamp into the converted header.
+    n_fibers : int, optional
+        Number of fibers to create when using a dummy fiber table.
+    fiber_table : astropy.table.Table, optional
+        Fiber table to attach; if provided, this is used instead of a dummy table.
+    """
     if n_fibers is None and fiber_table is None:
         raise ValueError("Either n_fibers or fiber_table must be provided")
     
