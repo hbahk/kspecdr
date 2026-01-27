@@ -227,6 +227,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         hdul_out.append(hdu_fibres)
 
     hdul_out.writeto(ex_fname, overwrite=True)
+    hdul_out.close()
     logger.info(f"Written extracted file: {ex_fname}")
 
 

@@ -187,6 +187,7 @@ def combine_image(
                  hdul.append(fib_hdu)
                  
     hdul.writeto(output_file, overwrite=True)
+    hdul.close()
     logger.info(f"Created combined file: {output_file}")
     
     return output_file

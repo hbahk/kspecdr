@@ -343,38 +343,38 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
     if n_fibers is None and fiber_table is None:
         raise ValueError("Either n_fibers or fiber_table must be provided")
     
-    hdul = fits.open(fpath)
-    hdr = hdul[0].header
-    new_hdr = convert_isoplane_header(hdr, ndfclass=ndfclass)
+    with fits.open(fpath) as hdul:
+        hdr = hdul[0].header
+        new_hdr = convert_isoplane_header(hdr, ndfclass=ndfclass)
 
-    # add fiber table
-    add_fiber_table(hdul, n_fibers=n_fibers, fiber_table=fiber_table)
+        # add fiber table
+        add_fiber_table(hdul, n_fibers=n_fibers, fiber_table=fiber_table)
 
-    # just use the first frame for now
-    if hdul[0].data.ndim == 3:
-        if hdul[0].data.shape[0] > 1:
-            raise ValueError("More than one frame in the input file. Use combine_image to combine frames.")
+        # just use the first frame for now
+        if hdul[0].data.ndim == 3:
+            if hdul[0].data.shape[0] > 1:
+                raise ValueError("More than one frame in the input file. Use combine_image to combine frames.")
+            else:
+                hdul[0].data = hdul[0].data[0]
+                # make new fits file with new header and fiber table
+                new_hdr["NAXIS"] = 2
+                new_hdr.remove("NAXIS3")
+                
+        elif hdul[0].data.ndim == 2:
+            pass
         else:
-            hdul[0].data = hdul[0].data[0]
-            # make new fits file with new header and fiber table
-            new_hdr["NAXIS"] = 2
-            new_hdr.remove("NAXIS3")
+            raise ValueError(f"Input data has {hdul[0].data.ndim} dimensions. Expected 2 or 3.")
+        
+        if new_hdr["FLIPHORI"] > 0:
+            hdul[0].data = np.flip(hdul[0].data, axis=1)
+            new_hdr["FLIPHORI"] = -1
+            logger.info("Flipped horizontal orientation")
             
-    elif hdul[0].data.ndim == 2:
-        pass
-    else:
-        raise ValueError(f"Input data has {hdul[0].data.ndim} dimensions. Expected 2 or 3.")
-    
-    if new_hdr["FLIPHORI"] > 0:
-        hdul[0].data = np.flip(hdul[0].data, axis=1)
-        new_hdr["FLIPHORI"] = -1
-        logger.info("Flipped horizontal orientation")
-        
-    if new_hdr["FLIPVERT"] > 0:
-        hdul[0].data = np.flip(hdul[0].data, axis=0)
-        new_hdr["FLIPVERT"] = -1
-        logger.info("Flipped vertical orientation")
-        
-    hdul[0].header = new_hdr
+        if new_hdr["FLIPVERT"] > 0:
+            hdul[0].data = np.flip(hdul[0].data, axis=0)
+            new_hdr["FLIPVERT"] = -1
+            logger.info("Flipped vertical orientation")
+            
+        hdul[0].header = new_hdr
 
-    hdul.writeto(output_fpath, overwrite=True)
+        hdul.writeto(output_fpath, overwrite=True)
