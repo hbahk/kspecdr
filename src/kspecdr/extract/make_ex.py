@@ -15,6 +15,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import warnings
 
 from ..io.image import ImageFile
+from ..tlm.make_tlm import predict_wavelength
 from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,10 @@ def make_ex(args: Dict[str, Any]) -> None:
         - TLMAP_FILENAME: Tramline map file
         - WTSCHEME: Weighting scheme (optional)
     """
-    im_fname = args.get('IMAGE_FILENAME')
-    ex_fname = args.get('EXTRAC_FILENAME')
-    tlm_fname = args.get('TLMAP_FILENAME')
-    wtscheme = args.get('WTSCHEME', 'STND')
+    im_fname = args.get("IMAGE_FILENAME")
+    ex_fname = args.get("EXTRAC_FILENAME")
+    tlm_fname = args.get("TLMAP_FILENAME")
+    wtscheme = args.get("WTSCHEME", "STND")
 
     if not im_fname or not ex_fname or not tlm_fname:
         raise ValueError("Missing required filenames (IMAGE, EXTRAC, or TLMAP)")
@@ -57,7 +58,10 @@ def make_ex(args: Dict[str, Any]) -> None:
 
     # TODO: Handle Stochastic copies if needed (NSTOCHIM) - skipping for now as it's advanced usage
 
-def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str, args: Dict[str, Any]) -> None:
+
+def make_ex_from_im(
+    im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str, args: Dict[str, Any]
+) -> None:
     """
     Process image file to produce extracted spectra.
     Replaces 2dfdr SUBROUTINE MAKE_EX_FROM_IM.
@@ -76,19 +80,28 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         Additional arguments
     """
     # 1. Get Extraction Method
-    operat = args.get('EXTR_OPERATION', 'TRAM').upper()
+    operat = args.get("EXTR_OPERATION", "TRAM").upper()
     logger.info(f"Extraction Method: {operat}")
 
-    valid_methods = ['FIT', 'TRAM', 'NEWTRAM', 'GAUSS', 'OPTEX', 'CLOPTEX', 'SMCOPTEX', 'SUM']
+    valid_methods = [
+        "FIT",
+        "TRAM",
+        "NEWTRAM",
+        "GAUSS",
+        "OPTEX",
+        "CLOPTEX",
+        "SMCOPTEX",
+        "SUM",
+    ]
     if operat not in valid_methods:
         raise ValueError(f"Method must be one of {valid_methods}")
 
-    if operat == 'FIT':
+    if operat == "FIT":
         raise NotImplementedError("FIT method does NOT work (legacy status)")
 
     # 2. Open Image File
-    with ImageFile(im_fname, mode='READ') as im_file:
-        im_class = im_file.get_header_value('CLASS', 'UNKNOWN')
+    with ImageFile(im_fname, mode="READ") as im_file:
+        im_class = im_file.get_header_value("CLASS", "UNKNOWN")
         instrument_code = im_file.get_instrument_code()
 
         img_data = im_file.read_image_data()
@@ -96,7 +109,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         fib_tabl = im_file.read_fiber_table()
 
         # 3. Read Tramline Map
-        with ImageFile(tlm_fname, mode='READ') as tlm_file:
+        with ImageFile(tlm_fname, mode="READ") as tlm_file:
             tlm_data = tlm_file.read_image_data()
             # TLM is (NFIB, NSPEC) - Horizontal
             nfib, nspec_tlm = tlm_data.shape
@@ -107,28 +120,76 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
             # Note: 2dfdr reads fiber types from IM file usually, as TLM might not have them updated?
 
             # Get MWIDTH from TLM header (Median FWHM)
-            mwidth = float(tlm_file.get_header_value('MWIDTH', 5.0))
+            mwidth = float(tlm_file.get_header_value("MWIDTH", 5.0))
 
             # Read Wavelength data if available
             wave_data = tlm_file.read_wave_data()
 
+            # Verify TLM header matches IM header; recompute WAVELA if mismatch.
+            def _get_hdr_float(img, key):
+                value = img.get_header_value(key, None)
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+
+            im_lambdac = _get_hdr_float(im_file, "LAMBDAC")
+            im_dispers = _get_hdr_float(im_file, "DISPERS")
+            tlm_lambdac = _get_hdr_float(tlm_file, "LAMBDAC")
+            tlm_dispers = _get_hdr_float(tlm_file, "DISPERS")
+
+            im_gratid = im_file.get_header_value("GRATID", None)
+            im_gratl = im_file.get_header_value("GRATLPMM", None)
+            tlm_gratid = tlm_file.get_header_value("GRATID", None)
+            tlm_gratl = tlm_file.get_header_value("GRATLPMM", None)
+
+            def _float_mismatch(a, b, tol=1e-3):
+                if a is None or b is None:
+                    return True
+                return abs(a - b) > tol
+
+            grat_mismatch = (
+                im_gratid is not None
+                and tlm_gratid is not None
+                and im_gratid != tlm_gratid
+            ) or (
+                im_gratl is not None and tlm_gratl is not None and im_gratl != tlm_gratl
+            )
+            wave_mismatch = _float_mismatch(im_lambdac, tlm_lambdac) or _float_mismatch(
+                im_dispers, tlm_dispers
+            )
+
+            if (
+                grat_mismatch
+                or wave_mismatch
+                or (tlm_lambdac is None and tlm_dispers is None)
+            ):
+                logger.warning(
+                    "TLM header mismatch with IM header; recomputing WAVELA from IM."
+                )
+                wave_data = predict_wavelength(im_file, tlm_data, args)
+
     # 4. Apply TLM Shift (Shift-Rotate-Tweak)
-    tlm_shift = float(args.get('TLM_SHIFT', 0.0))
+    tlm_shift = float(args.get("TLM_SHIFT", 0.0))
     if tlm_shift != 0.0:
         logger.info(f"Shifting Tramline Map by {tlm_shift} pixels")
         tlm_data += tlm_shift
 
     # 5. Background / Scattered Light Subtraction
     # (Placeholder: SCATSUB)
-    scatsub = args.get('SCATSUB', 'NONE')
-    if scatsub != 'NONE':
+    scatsub = args.get("SCATSUB", "NONE")
+    if scatsub != "NONE":
         # TODO: implement scattered light subtraction
-        logger.warning(f"Scattered light subtraction '{scatsub}' requested but not implemented yet.")
+        logger.warning(
+            f"Scattered light subtraction '{scatsub}' requested but not implemented yet."
+        )
 
     # 6. Standardize dimensions
     nspat, nspec = img_data.shape
 
-    tlm_data_T = tlm_data.T # Now (NSPEC, NFIB)
+    tlm_data_T = tlm_data.T  # Now (NSPEC, NFIB)
 
     # Initialize Output Arrays
     # Output extracted data: (NSPEC, NFIB)
@@ -136,34 +197,35 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
     ex_var = np.zeros((nspec, nfib), dtype=np.float32)
 
     # 7. Perform Extraction
-    if operat in ['TRAM', 'SUM', 'NEWTRAM']:
+    if operat in ["TRAM", "SUM", "NEWTRAM"]:
         # Simple Summing Extraction
         # Get width from args or use default
-        width = float(args.get('SUM_WIDTH', 5.0)) # Default from SUMEXTR
+        width = float(args.get("SUM_WIDTH", 5.0))  # Default from SUMEXTR
         # Or from MWIDTH if TRAM?
-        if operat == 'TRAM':
-             # TRAM usually uses tramlines. SUMEXTR uses WIDTH.
-             # 2dfdr: IF (OPERAT=='TRAM') CALL UMFIM_TRMEXTR...
-             # ELSE CALL SUMEXTR...
-             # We will implement SUMEXTR logic here as requested "simple summing"
-             # TODO: Implement TRAM extraction
-             pass
+        if operat == "TRAM":
+            # TRAM usually uses tramlines. SUMEXTR uses WIDTH.
+            # 2dfdr: IF (OPERAT=='TRAM') CALL UMFIM_TRMEXTR...
+            # ELSE CALL SUMEXTR...
+            # We will implement SUMEXTR logic here as requested "simple summing"
+            # TODO: Implement TRAM extraction
+            pass
 
         logger.info(f"Performing SUM extraction with width={width}")
 
         sum_extract(
-            nspat, nspec, img_data, var_data,
-            ex_img, ex_var, nfib, tlm_data_T, width
+            nspat, nspec, img_data, var_data, ex_img, ex_var, nfib, tlm_data_T, width
         )
 
-    elif operat == 'GAUSS':
+    elif operat == "GAUSS":
         # Placeholder for GAUSS
-        logger.warning("GAUSS extraction not fully implemented. Using simplified fallback or raising error.")
+        logger.warning(
+            "GAUSS extraction not fully implemented. Using simplified fallback or raising error."
+        )
         raise NotImplementedError("GAUSS extraction not implemented")
 
-    elif operat in ['OPTEX', 'SMCOPTEX']:
+    elif operat in ["OPTEX", "SMCOPTEX"]:
         # Placeholder for Optimal Extraction
-         raise NotImplementedError("Optimal extraction not implemented")
+        raise NotImplementedError("Optimal extraction not implemented")
 
     else:
         raise ValueError(f"Unknown operation: {operat}")
@@ -175,7 +237,7 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
     # Zero out 'F' (Guide), 'N' (Not used), 'U' (Unallocated)
     for fib in range(nfib):
         ftype = fiber_types[fib]
-        if ftype in ['F', 'N', 'U']:
+        if ftype in ["F", "N", "U"]:
             ex_img[:, fib] = 0.0
             ex_var[:, fib] = 0.0
 
@@ -196,16 +258,16 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         header = hdul_src[0].header.copy()
 
     # Update Header
-    header['HISTORY'] = f"Extracted using {operat}"
+    header["HISTORY"] = f"Extracted using {operat}"
 
     # Set Axes Labels
-    header['CTYPE1'] = 'Wavelength'
-    header['CUNIT1'] = 'Angstroms'
-    header['CTYPE2'] = 'Fibre Number'
+    header["CTYPE1"] = "Wavelength"
+    header["CUNIT1"] = "Angstroms"
+    header["CTYPE2"] = "Fibre Number"
 
     # Create HDUs
     hdu_data = fits.PrimaryHDU(data=ex_img_out, header=header)
-    hdu_var = fits.ImageHDU(data=ex_var_out, name='VARIANCE')
+    hdu_var = fits.ImageHDU(data=ex_var_out, name="VARIANCE")
 
     hdul_out = fits.HDUList([hdu_data, hdu_var])
 
@@ -218,12 +280,12 @@ def make_ex_from_im(im_fname: str, tlm_fname: str, ex_fname: str, wtscheme: str,
         # If read_wave_data returned data.shape == (ny, nx) == (nfib, nx_tlm)
         # And output is (nfib, nspec).
         # It matches.
-        hdu_wave = fits.ImageHDU(data=wave_data, name='WAVELA')
+        hdu_wave = fits.ImageHDU(data=wave_data, name="WAVELA")
         hdul_out.append(hdu_wave)
-        
+
     # Copy FIBRES if available (from IM file)
     if fib_tabl is not None:
-        hdu_fibres = fits.BinTableHDU(data=fib_tabl, name='FIBRES')
+        hdu_fibres = fits.BinTableHDU(data=fib_tabl, name="FIBRES")
         hdul_out.append(hdu_fibres)
 
     hdul_out.writeto(ex_fname, overwrite=True)
@@ -240,7 +302,7 @@ def sum_extract(
     outvar: np.ndarray,
     nfib: int,
     tlmap: np.ndarray,
-    width: float
+    width: float,
 ) -> None:
     """
     Perform simple summing extraction.
@@ -354,8 +416,8 @@ def sum_extract(
                 # where ilow_idx is index of first FULL pixel > tlow.
                 # ihigh_idx is index of last FULL pixel < thigh.
 
-                start_full = int(np.ceil(tlow)) # e.g. 5.1 -> 6
-                end_full = int(np.floor(thigh)) # e.g. 9.9 -> 9
+                start_full = int(np.ceil(tlow))  # e.g. 5.1 -> 6
+                end_full = int(np.floor(thigh))  # e.g. 9.9 -> 9
 
                 # Sum Full Pixels
                 # Note: 2dfdr logic for ILOW/IHIGH is slightly different, let's stick to first principles
@@ -366,7 +428,7 @@ def sum_extract(
 
                 # Iterate through all pixels touched
                 p_start = int(np.floor(tlow))
-                p_end = int(np.floor(thigh)) # Note: thigh is upper bound
+                p_end = int(np.floor(thigh))  # Note: thigh is upper bound
 
                 # Cap at image edges
                 p_start = max(0, p_start)
@@ -400,7 +462,7 @@ def sum_extract(
                             break
 
                         current_flux += val * fraction
-                        current_var += var * fraction # Linear variance scaling?
+                        current_var += var * fraction  # Linear variance scaling?
                         # 2dfdr: TOTVAR = TOTVAR+INVAR(ILOW-1,J)*PART
                         # Yes, it scales variance by fraction?
                         # Actually variance of (A*x) is A^2 * Var(x).
