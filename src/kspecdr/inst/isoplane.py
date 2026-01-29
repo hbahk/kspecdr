@@ -62,7 +62,7 @@ def get_isoplane_readout_settings(header: fits.Header) -> dict:
     gain_mode = None
     noise_mode = None
 
-    speed_mhz = header.get("PI CAMERA ADC SPEED", None)
+    speed_mhz = float(header.get("PI CAMERA ADC SPEED", None))
 
     gain_val = header.get("PI CAMERA ADC ANALOGGAIN", None)
     if gain_val:
@@ -495,7 +495,8 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
                 hdul[0].data = hdul[0].data[0]
                 # make new fits file with new header and fiber table
                 new_hdr["NAXIS"] = 2
-                new_hdr.remove("NAXIS3")
+                if "NAXIS3" in new_hdr:
+                    new_hdr.remove("NAXIS3")
                 
         elif hdul[0].data.ndim == 2:
             pass
@@ -515,3 +516,4 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
         hdul[0].header = new_hdr
 
         hdul.writeto(output_fpath, overwrite=True)
+        hdul.close()
