@@ -169,11 +169,7 @@ def add_fiber_table(hdul: fits.HDUList, n_fibers: int, fiber_table: Table = None
         if len(fiber_table) != n_fibers:
             logger.warning(f"Fiber table has {len(fiber_table)} rows, but n_fibers={n_fibers} were given. Ignoring n_fibers argument.")
             
-        fibcols = []
-        for col in fiber_table.columns:
-            c = fits.Column(name=col.name, format=col.format, array=col.data)
-            fibcols.append(c)
-        fib_hdu = fits.BinTableHDU.from_columns(fibcols, name="FIBRES")
+        fib_hdu = fits.table_to_hdu(fiber_table, name="FIBRES")
 
     # Append to HDUList
     hdul.append(fib_hdu)
