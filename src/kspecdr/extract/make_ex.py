@@ -120,7 +120,7 @@ def make_ex_from_im(
             # Note: 2dfdr reads fiber types from IM file usually, as TLM might not have them updated?
 
             # Get MWIDTH from TLM header (Median FWHM)
-            mwidth = float(tlm_file.get_header_value("MWIDTH", 5.0))
+            mwidth = float(tlm_file.get_header_value("MWIDTH", 2.0))
 
             # Read Wavelength data if available
             wave_data = tlm_file.read_wave_data()
@@ -169,7 +169,7 @@ def make_ex_from_im(
                 logger.warning(
                     "TLM header mismatch with IM header; recomputing WAVELA from IM."
                 )
-                wave_data = predict_wavelength(im_file, tlm_data, args)
+                wave_data = predict_wavelength(im_file, tlm_data.T, args).T
 
     # 4. Apply TLM Shift (Shift-Rotate-Tweak)
     tlm_shift = float(args.get("TLM_SHIFT", 0.0))
