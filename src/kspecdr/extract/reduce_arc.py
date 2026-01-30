@@ -476,6 +476,12 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
             diag = Table({"coeffs": coeffs})
             diag.write(diagnostic_dir / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}")
+            
+            # calibrated spectra
+            cal_centers = np.polyval(coeffs, np.arange(master_npix, dtype=float))
+            diag = Table({"wave": cal_centers, "flux": master_template})
+            diag.write(diagnostic_dir / "CALIBRATED_SPECTRA.dat", format="ascii.csv", overwrite=True)
+            logger.info(f"Diagnostic file written to {diagnostic_dir / 'CALIBRATED_SPECTRA.dat'}")
         else:
             return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs, "lamps": lamps}
         
