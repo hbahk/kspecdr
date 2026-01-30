@@ -189,7 +189,7 @@ def make_tlm_other(
         )
 
     # Step 8: Write tramline data to output file
-    write_tramline_data(tlm_fname, tramline_map, instrument_code, args)
+    write_tramline_data(tlm_fname, tramline_map, instrument_code, im_file)
 
     # Step 9: Calculate and write wavelength data (if not 2DF)
     if instrument_code != INST_2DF:
@@ -219,7 +219,7 @@ def read_instrument_data(
     """
     img_data = im_file.read_image_data()
     var_data = im_file.read_variance_data()
-    overrides = get_override_from_args(im_file.hdul[0].header.get("ARGS", {}))
+    # overrides = get_override_from_args(im_file.hdul[0].header.get("ARGS", {}))
     overrides = get_override_from_args(args)
     fibre_types, nf = im_file.read_fiber_types(MAX__NFIBRES, overrides=overrides)
     return img_data, var_data, fibre_types
@@ -944,7 +944,7 @@ def get_fibre_separation(instrument_code: int) -> float:
 
 
 def write_tramline_data(
-    tlm_fname: str, tramline_map: np.ndarray, instrument_code: int, args: Dict[str, Any]
+    tlm_fname: str, tramline_map: np.ndarray, instrument_code: int, im_file: ImageFile
 ) -> None:
     """
     Write tramline data to output file.
@@ -957,8 +957,8 @@ def write_tramline_data(
         Tramline map array
     instrument_code : int
         Instrument code
-    args : dict
-        Method arguments
+    im_file : ImageFile
+        Image file handler
     """
     logger.info(f"Writing tramline data to {tlm_fname}")
 
@@ -970,8 +970,12 @@ def write_tramline_data(
 
     # Add header keywords
     hdu.header["INSTRUME"] = f"INST_{instrument_code}"
-    hdu.header["MWIDTH"] = 1.9  # Median spatial FWHM
-    hdu.header["PSF_TYPE"] = "GAUSS"
+    hdu.header["MWIDTH"] = 1.9  # TODO: pass from separate analysis, not hardcoded
+    hdu.header["PSF_TYPE"] = "GAUSS" # TODO: pass from separate analysis, not hardcoded
+    hdu.header["LAMBDAC"] = im_file.get_header_value("LAMBDAC", None)
+    hdu.header["DISPERS"] = im_file.get_header_value("DISPERS", None)
+    hdu.header["GRATID"] = im_file.get_header_value("GRATID", None)
+    hdu.header["GRATLPMM"] = im_file.get_header_value("GRATLPMM", None)
 
     # Create HDU list
     hdul = fits.HDUList([hdu])
