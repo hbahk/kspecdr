@@ -196,6 +196,8 @@ def reduce_bias(
     raw_files: List[str],
     output_file: str = "BIAScombined.fits",
     bias_type: str = "MASTER",
+    method: Optional[str] = 'SIGMA_CLIP',
+    sigma: Optional[float] = 4.0,
     **kwargs
 ) -> str:
     """
@@ -232,8 +234,8 @@ def reduce_bias(
     combined_file = combine_image(
         im_files, 
         output_file, 
-        method='SIGMA_CLIP',
-        sigma=5.0,
+        method=method,
+        sigma=sigma,
         adjust_levels=False
     )
     
@@ -247,6 +249,8 @@ def reduce_dark(
     raw_files: List[str],
     output_file: str = "DARKcombined.fits",
     bias_filename: Optional[str] = None,
+    method: Optional[str] = 'MEDIAN',
+    sigma: Optional[float] = None,
     **kwargs
 ) -> Union[str, List[str]]:
     """
@@ -260,6 +264,10 @@ def reduce_dark(
         Output master dark filename
     bias_filename : str, optional
         Master bias file to subtract
+    method : str, optional
+        Combination method ('MEDIAN', 'MEAN', 'SIGMA_CLIP'). Default is 'MEDIAN'.
+    sigma : float, optional
+        Sigma value for sigma clipping (used only if method='SIGMA_CLIP'). Default is None.
         
     Returns
     -------
@@ -302,7 +310,8 @@ def reduce_dark(
         combined_file = combine_image(
             im_files, 
             output_file, 
-            method='MEDIAN', 
+            method=method, 
+            sigma=sigma,
             adjust_levels=False
         )
         with ImageFile(combined_file, mode='UPDATE') as im:
@@ -319,7 +328,7 @@ def reduce_dark(
         for et, group_files in files_by_et.items():
             # Construct new filename: stem_ETs.fits
             # e.g. DARKcombined_1200s.fits
-            new_filename = parent / f"{stem}_{et}s{suffix}"
+            new_filename = parent / f"{stem}_{et:04d}s{suffix}"
             new_filename_str = str(new_filename)
             
             logger.info(f"Combining {len(group_files)} frames with exposure {et}s into {new_filename_str}")
@@ -327,7 +336,8 @@ def reduce_dark(
             combined_file = combine_image(
                 group_files,
                 new_filename_str,
-                method='MEDIAN',
+                method=method,
+                sigma=sigma,
                 adjust_levels=False
             )
             

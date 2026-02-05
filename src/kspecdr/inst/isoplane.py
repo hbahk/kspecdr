@@ -6,6 +6,8 @@ This module provides functions to convert raw headers from various instruments
 """
 
 import logging
+from pathlib import Path
+from typing import List, Optional
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.time import Time
@@ -452,7 +454,14 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     return new_header
 
 
-def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str, n_fibers: int = None, fiber_table: Table = None) -> None:
+def write_isoplane_converted_image(
+    fpath: str,
+    output_fpath: str,
+    ndfclass: str,
+    n_fibers: int = None,
+    fiber_table: Table = None,
+    split_frames: bool = False,
+) -> Optional[List[str]]:
     """
     Convert a PIXIS/Isoplane raw FITS file into a kspecdr-compatible file.
 
@@ -472,6 +481,15 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
         Number of fibers to create when using a dummy fiber table.
     fiber_table : astropy.table.Table, optional
         Fiber table to attach; if provided, this is used instead of a dummy table.
+    split_frames : bool, optional
+        If True and the input is a 3D cube with multiple frames, write each frame
+        to a separate file by appending a 4-digit index to output_fpath.
+
+    Returns
+    -------
+    list of str or None
+        List of output paths when split_frames is True and multiple frames exist;
+        otherwise None.
     """
     if n_fibers is None and fiber_table is None:
         raise ValueError("Either n_fibers or fiber_table must be provided")
@@ -486,7 +504,42 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
         # just use the first frame for now
         if hdul[0].data.ndim == 3:
             if hdul[0].data.shape[0] > 1:
-                raise ValueError("More than one frame in the input file. Use combine_image to combine frames.")
+                if split_frames:
+                    output_paths: List[str] = []
+                    output_path = Path(output_fpath)
+                    base = output_path.with_suffix("")
+                    ext = output_path.suffix
+                    for idx, frame in enumerate(hdul[0].data, start=1):
+                        frame_hdr = new_hdr.copy()
+                        frame_hdr["NAXIS"] = 2
+                        if "NAXIS3" in frame_hdr:
+                            frame_hdr.remove("NAXIS3")
+
+                        frame_data = frame
+                        if frame_hdr["FLIPHORI"] > 0:
+                            frame_data = np.flip(frame_data, axis=1)
+                            frame_hdr["FLIPHORI"] = -1
+                            logger.info("Flipped horizontal orientation")
+
+                        if frame_hdr["FLIPVERT"] > 0:
+                            frame_data = np.flip(frame_data, axis=0)
+                            frame_hdr["FLIPVERT"] = -1
+                            logger.info("Flipped vertical orientation")
+
+                        frame_hdul = fits.HDUList([hdu.copy() for hdu in hdul])
+                        frame_hdul[0].data = frame_data
+                        frame_hdul[0].header = frame_hdr
+
+                        output_path = f"{base}{idx:04d}{ext}"
+                        frame_hdul.writeto(str(output_path), overwrite=True)
+                        frame_hdul.close()
+                        output_paths.append(str(output_path))
+
+                    return output_paths
+
+                raise ValueError(
+                    "More than one frame in the input file. Use combine_image to combine frames."
+                )
             else:
                 hdul[0].data = hdul[0].data[0]
                 # make new fits file with new header and fiber table
@@ -513,3 +566,4 @@ def write_isoplane_converted_image(fpath: str, output_fpath: str, ndfclass: str,
 
         hdul.writeto(output_fpath, overwrite=True)
         hdul.close()
+        return None
