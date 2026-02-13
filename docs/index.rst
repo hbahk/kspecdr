@@ -18,6 +18,8 @@ Contents
    quickstart
    package_overview
    reduction_steps
+   isoplane_reduction_workflow
+   isoplane_reduction_theory
    examples/basic_usage
    examples/wavecal_test
 

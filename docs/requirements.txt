@@ -1,8 +1,9 @@
 sphinx>=4.0.0
-sphinx-rtd-theme
+pydata-sphinx-theme
 myst-parser
 scikit-learn
 astropy
 numpy
 scipy
 myst-nb
+sphinxcontrib-mermaid
