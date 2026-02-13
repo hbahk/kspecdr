@@ -7,3 +7,4 @@ numpy
 scipy
 myst-nb
 sphinxcontrib-mermaid
+tqdm

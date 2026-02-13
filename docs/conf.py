@@ -25,6 +25,13 @@ extensions = [
     'myst_nb',
 ]
 
+# Keep autodoc robust on Read the Docs even when optional runtime deps are absent.
+autodoc_mock_imports = [
+    "astroscrappy",
+    "pywt",
+    "tqdm",
+]
+
 HAS_MERMAID = importlib.util.find_spec("sphinxcontrib.mermaid") is not None
 if HAS_MERMAID:
     extensions.append("sphinxcontrib.mermaid")
