@@ -382,16 +382,14 @@ def detect_traces(
 
     Returns
     -------
-    tuple
-        (ntraces, tracea, rep_slice, rep_pkpos)
-        ntraces : int
-            Number of traces found
-        tracea : np.ndarray
-            Trace array of shape (nspec, max_ntraces)
-        rep_slice : np.ndarray
-            Representation profile slice of shape (nspat,)
-        rep_pkpos : np.ndarray
-            Representation slice peak list of shape (nspat,)
+    ntraces : int
+        Number of traces found.
+    tracea : np.ndarray
+        Trace array of shape (nspec, max_ntraces).
+    rep_slice : np.ndarray
+        Representation profile slice of shape (nspat,).
+    rep_pkpos : np.ndarray
+        Representation slice peak list of shape (nspat,).
     """
 
     # Heuristic parameters (from Fortran code)
