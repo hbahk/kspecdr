@@ -18,18 +18,54 @@ from ..extract.make_ex import make_ex
 from ..constants import *
 from ..wavecal.calibrate import (
     calibrate_spectral_axes,
+    compute_resolution_stats,
     extract_template_spectrum,
     find_arc_line_matches,
     fit_calibration_model,
     apply_calibration_model,
     find_reference_fiber,
-    analyse_arc_signal
+    analyse_arc_signal,
 )
 from ..wavecal.arc_io import read_arc_file
 from ..utils.args import init_args
 from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
+
+
+def _write_resolution_header(red_file: "ImageFile", resolution_info: dict) -> None:
+    """Write spectral resolution keywords to the primary FITS header."""
+    if not resolution_info:
+        return
+
+    hdr = red_file.hdul[0].header
+    hdr["SPECSIGP"] = (
+        round(resolution_info["sigma_pix_median"], 4),
+        "Median arc-line Gaussian sigma (pixels)",
+    )
+    hdr["SPECFWHM"] = (
+        round(resolution_info["fwhm_angstrom_median"], 4),
+        "Median arc-line FWHM (Angstrom)",
+    )
+    hdr["SPECRES"] = (
+        round(resolution_info["resolving_power_median"], 1),
+        "Median resolving power R = lambda/FWHM",
+    )
+    fwhm_poly = resolution_info["fwhm_poly_coeffs"]
+    for i, c in enumerate(fwhm_poly):
+        hdr[f"FWHMPC{i}"] = (
+            round(float(c), 8),
+            f"FWHM(lambda) poly coeff c{i} (highest order first)",
+        )
+    hdr["FWHMPCO"] = (
+        len(fwhm_poly) - 1,
+        "FWHM(lambda) polynomial order",
+    )
+
+    logger.info(
+        f"Resolution keywords written: SPECFWHM={hdr['SPECFWHM']:.4f} Å, "
+        f"SPECRES={hdr['SPECRES']:.1f}"
+    )
 
 
 def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, diagnostic_dir: Optional[Path] = None) -> None:
@@ -133,7 +169,7 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
             if instrument_code == INST_AAOMEGA_SAMI:
                 maxshift = 150
 
-            pixcal_dp, status = calibrate_spectral_axes(
+            pixcal_dp, status, resolution_info = calibrate_spectral_axes(
                 nx, nf, spectra, variance, wave_axis, goodfib, wlist, ilist, listsize, maxshift,
                 diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
             )
@@ -144,6 +180,7 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
                 shifts = np.zeros((nf, 4))
                 shifts[:, 1] = 1.0
                 red_file.write_shifts_data(shifts)
+                _write_resolution_header(red_file, resolution_info)
                 logger.info("Wavelength calibration completed successfully.")
 
         else:
@@ -393,7 +430,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
     # 4. Identify Lines & Global Fit
     maxshift = frames_metadata[0]["args"].get("CRSCGMA_MS", 70) # Use first frame's setting
 
-    x_pts, y_pts, _ = find_arc_line_matches(
+    x_pts, y_pts, s_pts, _ = find_arc_line_matches(
         master_template, master_template_mask, avg_sigma_inpix, master_cen_axis, master_npix,
         master_muv, master_av, master_mask, maxshift, diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
     )
@@ -405,13 +442,11 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
         return
 
     # Find master_muv indices corresponding to each y_pts (wavelength) for lamp mapping
-    # y_pts are a subset of master_muv, so find the closest index
     matched_indices = []
     for y in y_pts:
         idx = np.argmin(np.abs(master_muv - y))
         matched_indices.append(idx)
     
-    # Use matched_indices to find the lamp for each x_pts
     lamps = [lamp_list[master_lamp_indices[i]] for i in matched_indices]
 
     coeffs, residuals, outliers = fit_calibration_model(
@@ -421,6 +456,11 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
     if len(residuals) > 0:
          rms_res = np.sqrt(np.mean((residuals**2)[~outliers]))
          logger.info(f"Global Fit RMS: {rms_res:.4f}")
+
+    # Compute spectral resolution from per-line Gaussian sigmas
+    resolution_info = compute_resolution_stats(
+        x_pts, y_pts, s_pts, coeffs, outliers
+    )
 
     # 5. Apply Global Solution to All Frames
     # Using Master LMR and Master Ref Fib
@@ -436,16 +476,12 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
         shutil.copy2(ex_filename, red_filename)
 
         with ImageFile(red_filename, mode="UPDATE") as red_file:
-            # Note: synchronise_calibration_last (called by apply) uses lmr to map
-            # the global solution (at master_ref_fib) to each individual fiber.
-            # By passing master_lmr, we use the combined set of landmarks for this mapping.
             pixcal_dp = apply_calibration_model(
                 coeffs, frame["nx"], frame["nf"],
                 frame["goodfib"], master_ref_fib,
                 master_lmr, master_nlm
             )
 
-            # Write results
             new_wave = 0.5 * (pixcal_dp[:-1, :] + pixcal_dp[1:, :])
             red_file.write_wave_data(new_wave.T)
 
@@ -453,6 +489,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
             shifts[:, 1] = 1.0
             red_file.write_shifts_data(shifts)
 
+            _write_resolution_header(red_file, resolution_info)
             logger.info(f"Updated {red_filename} with global calibration.")
     
     # Write diagnostic file
@@ -461,28 +498,43 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
             if not diagnostic_dir.exists():
                 diagnostic_dir.mkdir(parents=True, exist_ok=True)
         
-            # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
             diag = Table({
                 "x_pts": x_pts, 
-                "y_pts": y_pts, 
+                "y_pts": y_pts,
+                "sigma_pix": s_pts,
                 "residuals": residuals, 
                 "outliers": outliers,
-                "lamps": lamps
+                "lamps": lamps,
             })
             diag.write(diagnostic_dir / "identified_arcs.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}")
             
-            # global fit coefficients
+            # Per-line resolution (good lines only)
+            pl = resolution_info["per_line"]
+            res_diag = Table({
+                "wavelength": pl["wavelength"],
+                "pixel": pl["pixel"],
+                "sigma_pix": pl["sigma_pix"],
+                "fwhm_angstrom": pl["fwhm_angstrom"],
+                "resolving_power": pl["resolving_power"],
+            })
+            res_diag.write(diagnostic_dir / "resolution_per_line.dat", format="ascii.fixed_width_two_line", overwrite=True)
+            logger.info(f"Diagnostic file written to {diagnostic_dir / 'resolution_per_line.dat'}")
+
             diag = Table({"coeffs": coeffs})
             diag.write(diagnostic_dir / "global_fit_coefficients.dat", format="ascii.fixed_width_two_line", overwrite=True)
             logger.info(f"Diagnostic file written to {diagnostic_dir / 'global_fit_coefficients.dat'}")
             
-            # calibrated spectra
             cal_centers = np.polyval(coeffs, np.arange(master_npix, dtype=float))
             diag = Table({"wave": cal_centers, "flux": master_template})
             diag.write(diagnostic_dir / "CALIBRATED_SPECTRA.dat", format="ascii.csv", overwrite=True)
             logger.info(f"Diagnostic file written to {diagnostic_dir / 'CALIBRATED_SPECTRA.dat'}")
         else:
-            return {"x_pts": x_pts, "y_pts": y_pts, "residuals": residuals, "outliers": outliers, "coeffs": coeffs, "lamps": lamps}
+            return {
+                "x_pts": x_pts, "y_pts": y_pts, "sigma_pix": s_pts,
+                "residuals": residuals, "outliers": outliers,
+                "coeffs": coeffs, "lamps": lamps,
+                "resolution_info": resolution_info,
+            }
         
     logger.info("Multi-arc reduction completed.")

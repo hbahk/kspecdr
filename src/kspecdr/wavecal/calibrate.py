@@ -135,7 +135,7 @@ def refine_peak_gaussian_fast(
     max_iter: int = 6,
     clip_sigma: Tuple[float, float] = (0.3, 8.0),
     min_amp_snr: float = 2.0,
-) -> Tuple[float, bool]:
+) -> Tuple[float, float, bool]:
     """
     Fast Gaussian(+linear background) peak refinement around idx_guess.
 
@@ -143,13 +143,13 @@ def refine_peak_gaussian_fast(
         y = A * exp(-(x-x0)^2/(2*s^2)) + B + C*(x-xmean)
 
     Returns:
-        x0_refined (float), ok (bool)
+        x0_refined (float), sigma_pix (float), ok (bool)
     """
     n = spectrum.size
     start = max(0, idx_guess - hw)
     end = min(n, idx_guess + hw + 1)
     if end - start < 5:
-        return float(idx_guess), False
+        return float(idx_guess), sigma0, False
 
     x = np.arange(start, end, dtype=np.float64)
     y = spectrum[start:end].astype(np.float64, copy=False)
@@ -157,7 +157,7 @@ def refine_peak_gaussian_fast(
     # quick sanity: require a peak not at the boundary
     local_max = int(np.argmax(y)) + start
     if local_max <= start or local_max >= end - 1:
-        return float(idx_guess), False
+        return float(idx_guess), sigma0, False
 
     # initial x0 from 3-point parabola around the local maximum
     y0, y1, y2 = spectrum[local_max - 1], spectrum[local_max], spectrum[local_max + 1]
@@ -181,7 +181,7 @@ def refine_peak_gaussian_fast(
     # If the peak is tiny, fitting is often unstable; bail early.
     peak_amp = float(np.max(y) - med)
     if peak_amp < min_amp_snr * noise:
-        return x0, False
+        return x0, s, False
 
     ok = True
 
@@ -252,7 +252,7 @@ def refine_peak_gaussian_fast(
     if x0 < start or x0 > end - 1:
         ok = False
 
-    return float(x0), ok
+    return float(x0), float(s), ok
 
 
 def find_arc_line_matches(
@@ -267,13 +267,14 @@ def find_arc_line_matches(
     maxshift: int,
     diagnostic: Optional[bool] = False,
     diagnostic_dir: Optional[Path] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Identifies arc lines in the template spectrum.
 
     Returns:
         valid_pixels: Measured pixel positions
         valid_waves: True wavelengths
+        valid_sigmas: Per-line Gaussian sigma in pixels from the fit
         final_mask: Boolean mask of lamp lines (True = bad/unused)
     """
     m = len(muv)
@@ -372,6 +373,7 @@ def find_arc_line_matches(
 
     # 7. Identify Peaks in Template (Shifted)
     pix_newv = np.zeros(m)
+    sig_newv = np.full(m, np.nan)
     mask2 = mask_badcorr.copy()
 
     for i in range(m):
@@ -399,24 +401,7 @@ def find_arc_line_matches(
             mask2[i] = True
             continue
 
-        # y0 = template_spectra[local_max_idx - 1]
-        # y1 = template_spectra[local_max_idx]
-        # y2 = template_spectra[local_max_idx + 1]
-
-        # denom = 2 * y1 - y0 - y2
-        # if denom == 0:
-        #     mask2[i] = True
-        #     continue
-
-        # delta = 0.5 * (y0 - y2) / denom
-        # pix_new = local_max_idx + delta
-        # if np.isnan(pix_new):
-        #     mask2[i] = True
-        #     continue
-        # pix_newv[i] = pix_new
-
-        # Refine peak position using Gaussian fit
-        x0_fit, ok = refine_peak_gaussian_fast(
+        x0_fit, s_fit, ok = refine_peak_gaussian_fast(
             template_spectra,
             idx_guess=local_max_idx,
             sigma0=sigma_inpix,
@@ -429,9 +414,10 @@ def find_arc_line_matches(
             continue
 
         pix_newv[i] = x0_fit
+        sig_newv[i] = s_fit
 
     valid = ~mask2
-    return pix_newv[valid], muv[valid], mask2
+    return pix_newv[valid], muv[valid], sig_newv[valid], mask2
 
 
 def fit_calibration_model(
@@ -498,6 +484,94 @@ def apply_calibration_model(
     return synchcal_axes.T
 
 
+FWHM_FACTOR = 2.0 * np.sqrt(2.0 * np.log(2.0))  # 2.3548
+
+
+def compute_resolution_stats(
+    x_pts: np.ndarray,
+    y_pts: np.ndarray,
+    sigma_pix: np.ndarray,
+    coeffs: np.ndarray,
+    outliers: np.ndarray,
+    fwhm_poly_order: int = 1,
+) -> dict:
+    """
+    Compute spectral resolution statistics from per-line Gaussian fits.
+
+    Uses the wavelength solution polynomial to convert per-line sigma (pixels)
+    to FWHM (Angstrom) via the local dispersion at each line position.
+
+    Parameters
+    ----------
+    x_pts : pixel positions of matched lines
+    y_pts : wavelengths of matched lines
+    sigma_pix : per-line Gaussian sigma in pixels
+    coeffs : wavelength solution polynomial coefficients (np.polyval order)
+    outliers : boolean mask from the wavelength fit (True = outlier)
+    fwhm_poly_order : order of the FWHM(lambda) polynomial fit
+
+    Returns
+    -------
+    dict with keys:
+        sigma_pix_median : median sigma in pixels (all good lines)
+        fwhm_angstrom_median : median FWHM in Angstrom
+        resolving_power_median : median R = lambda / FWHM
+        fwhm_poly_coeffs : polynomial coefficients for FWHM(lambda) fit
+        per_line : dict of per-line arrays (wavelength, pixel, sigma_pix,
+                   fwhm_angstrom, resolving_power) for diagnostics
+    """
+    good = ~outliers
+    x_good = x_pts[good]
+    y_good = y_pts[good]
+    s_good = sigma_pix[good]
+
+    # Local dispersion from derivative of the wavelength polynomial
+    deriv_coeffs = np.polyder(coeffs)
+    local_disp = np.abs(np.polyval(deriv_coeffs, x_good))  # Å/pixel
+
+    sigma_ang = s_good * local_disp
+    fwhm_ang = FWHM_FACTOR * sigma_ang
+    resolving_power = y_good / fwhm_ang
+
+    med_sigma_pix = float(np.median(s_good))
+    med_fwhm = float(np.median(fwhm_ang))
+    med_wave = float(np.median(y_good))
+    med_R = float(med_wave / med_fwhm) if med_fwhm > 0 else 0.0
+
+    # Fit FWHM(lambda) polynomial for wavelength-dependent resolution
+    n_good = len(y_good)
+    order = min(fwhm_poly_order, max(n_good - 1, 0))
+    if n_good >= 2:
+        fwhm_poly = robust_polyfit(y_good, fwhm_ang, order)
+    else:
+        fwhm_poly = np.array([med_fwhm])
+
+    logger.info(
+        f"Resolution: median sigma={med_sigma_pix:.3f} pix, "
+        f"FWHM={med_fwhm:.3f} Å, R={med_R:.0f}"
+    )
+    if len(fwhm_poly) > 1:
+        fwhm_blue = float(np.polyval(fwhm_poly, np.min(y_good)))
+        fwhm_red = float(np.polyval(fwhm_poly, np.max(y_good)))
+        logger.info(
+            f"FWHM trend: {fwhm_blue:.3f} Å (blue) → {fwhm_red:.3f} Å (red)"
+        )
+
+    return {
+        "sigma_pix_median": med_sigma_pix,
+        "fwhm_angstrom_median": med_fwhm,
+        "resolving_power_median": med_R,
+        "fwhm_poly_coeffs": fwhm_poly,
+        "per_line": {
+            "wavelength": y_good,
+            "pixel": x_good,
+            "sigma_pix": s_good,
+            "fwhm_angstrom": fwhm_ang,
+            "resolving_power": resolving_power,
+        },
+    }
+
+
 def calibrate_spectral_axes(
     npix: int,
     nfib: int,
@@ -511,7 +585,7 @@ def calibrate_spectral_axes(
     maxshift: int,
     diagnostic: Optional[bool] = False,
     diagnostic_dir: Optional[Path] = None,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, int, dict]:
     """
     Calibrate the pixels of extracted arclamp spectra.
 
@@ -521,11 +595,14 @@ def calibrate_spectral_axes(
         Calibrated pixels (NPIX+1, NFIB)
     status : int
         Status code (0 = OK)
+    resolution_info : dict
+        Spectral resolution measurements from arc line fits.
+        Empty dict if calibration fails.  See `compute_resolution_stats`.
     """
     # 1. Preamble & Ref Fibre
     ref_fib = find_reference_fiber(nfib, goodfib)
     if ref_fib == -1:
-        return np.zeros((npix + 1, nfib)), -1
+        return np.zeros((npix + 1, nfib)), -1, {}
 
     logger.info(f"Reference fibre: {ref_fib}")
 
@@ -579,7 +656,7 @@ def calibrate_spectral_axes(
     )
 
     # Identify Arc Lines
-    x_pts, y_pts, _ = find_arc_line_matches(
+    x_pts, y_pts, s_pts, _ = find_arc_line_matches(
         template_spectra,
         template_mask,
         sigma_inpix,
@@ -596,7 +673,7 @@ def calibrate_spectral_axes(
     logger.info(f"Valid points: {len(x_pts)}")
     if len(x_pts) < 4:
         logger.warning(f"Not enough valid points for cubic fit - {len(x_pts)} points.")
-        return np.zeros((npix + 1, nfib)), -1
+        return np.zeros((npix + 1, nfib)), -1, {}
 
     # Fit Model
     coeffs, residuals, outliers = fit_calibration_model(x_pts, y_pts, poly_order=3)
@@ -609,6 +686,11 @@ def calibrate_spectral_axes(
 
         rms_res = np.sqrt(np.mean((residuals**2)[~outliers]))
         logger.info(f"RMS residual: {rms_res:.4f}")
+
+    # Compute spectral resolution from per-line Gaussian sigmas
+    resolution_info = compute_resolution_stats(
+        x_pts, y_pts, s_pts, coeffs, outliers
+    )
 
     if diagnostic:
         if diagnostic_dir:
@@ -623,11 +705,13 @@ def calibrate_spectral_axes(
             fmt="%.4f",
         )
 
-        # identified arc lines in x_pts, y_pts, residuals, outliers, lamps
+        # Per-line measurements including resolution
+        pl = resolution_info["per_line"]
         diag = Table(
             {
                 "x_pts": x_pts,
                 "y_pts": y_pts,
+                "sigma_pix": s_pts,
                 "residuals": residuals,
                 "outliers": outliers,
             }
@@ -639,6 +723,25 @@ def calibrate_spectral_axes(
         )
         logger.info(
             f"Diagnostic file written to {diagnostic_dir / 'identified_arcs.dat'}"
+        )
+
+        # Per-line resolution (good lines only, after outlier rejection)
+        res_diag = Table(
+            {
+                "wavelength": pl["wavelength"],
+                "pixel": pl["pixel"],
+                "sigma_pix": pl["sigma_pix"],
+                "fwhm_angstrom": pl["fwhm_angstrom"],
+                "resolving_power": pl["resolving_power"],
+            }
+        )
+        res_diag.write(
+            diagnostic_dir / "resolution_per_line.dat",
+            format="ascii.fixed_width_two_line",
+            overwrite=True,
+        )
+        logger.info(
+            f"Diagnostic file written to {diagnostic_dir / 'resolution_per_line.dat'}"
         )
 
         # global fit coefficients
@@ -655,4 +758,4 @@ def calibrate_spectral_axes(
     # Apply Calibration
     pixcal_dp = apply_calibration_model(coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm)
 
-    return pixcal_dp, 0
+    return pixcal_dp, 0, resolution_info

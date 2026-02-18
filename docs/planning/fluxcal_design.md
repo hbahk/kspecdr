@@ -136,7 +136,7 @@ For each standard star on the plate:
   2. Load broadband photometry from catalog CSV
   3. Estimate Teff from broadband colors → narrow template search range
   4. For each candidate template in the (narrowed) BOSZ subgrid:
-     a. Convolve to instrument resolution (FWHM from DISPERS header)
+     a. Convolve to instrument resolution (SPECFWHM / FWHMPCn headers from wavecal)
      b. Resample to observed wavelength grid
      c. Cross-correlate to measure/correct RV shift
      d. Continuum-normalize both observed and template
@@ -452,8 +452,14 @@ def parse_bosz_filename(filename: str) -> dict:
     """Parse BOSZ filename → {atmos, teff, logg, feh, alpha_m, carbon_m, vmicro}."""
 
 def prepare_template(template, target_wavelength,
-                     instrument_fwhm_angstrom) -> Spectrum1D:
+                     instrument_fwhm_angstrom,
+                     fwhm_poly_coeffs=None) -> Spectrum1D:
     """Convolve to instrument resolution, resample to observed grid.
+
+    If fwhm_poly_coeffs is provided, applies wavelength-dependent
+    convolution using FWHM(lambda) polynomial from wavecal (FWHMPCn
+    header keywords).  Otherwise uses a constant instrument_fwhm_angstrom
+    (SPECFWHM header keyword).
 
     Uses scipy.ndimage.gaussian_filter1d for convolution and
     scipy.interpolate.interp1d for resampling.
