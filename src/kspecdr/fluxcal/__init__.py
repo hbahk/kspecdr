@@ -30,9 +30,16 @@ matching
     :func:`~.matching.cross_correlate_rv`,
     :func:`~.matching.score_template_fit`
 
-Planned (P2)
-------------
-calibration  — Per-star and combined calibration vectors, application to science spectra
+Implemented (P2)
+----------------
+calibration
+    :func:`~.calibration.scale_template_to_photometry`,
+    :func:`~.calibration.compute_calibration_vector_for_star`,
+    :func:`~.calibration.combine_calibration_vectors`,
+    :func:`~.calibration.apply_flux_calibration`
+
+Pipeline integration: ``reduce_object.py`` calls ``_apply_fluxcal`` when
+``CALIBFLUX=True``, reading standard-star fibers (TYPE='C') and catalog.
 
 Utilities
 ---------
@@ -74,6 +81,12 @@ from .photometry import (
     load_standard_star_catalog,
     photometry_from_catalog_row,
     synthetic_photometry,
+)
+from .calibration import (
+    apply_flux_calibration,
+    combine_calibration_vectors,
+    compute_calibration_vector_for_star,
+    scale_template_to_photometry,
 )
 from .templates import (
     TemplateLibrary,
@@ -119,4 +132,9 @@ __all__ = [
     "select_best_template",
     "cross_correlate_rv",
     "score_template_fit",
+    # calibration
+    "scale_template_to_photometry",
+    "compute_calibration_vector_for_star",
+    "combine_calibration_vectors",
+    "apply_flux_calibration",
 ]

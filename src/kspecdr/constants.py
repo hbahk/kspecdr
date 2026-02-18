@@ -17,3 +17,11 @@ INST_ISOPLANE = 99
 
 # Maximum number of fibres
 MAX__NFIBRES = 1000
+
+# Fiber type codes
+FIBER_TYPE_PROGRAM = "P"       # Science target (star or galaxy)
+FIBER_TYPE_SKY = "S"           # Sky fiber
+FIBER_TYPE_FIDUCIAL = "F"      # Fiducial (guide) fiber
+FIBER_TYPE_CALIBRATION = "C"   # Spectrophotometric standard star
+FIBER_TYPE_NONE = "N"          # Unallocated / unused
+FIBER_TYPE_UNKNOWN = "U"       # Unknown

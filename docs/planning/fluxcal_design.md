@@ -1,6 +1,6 @@
 # Flux Calibration Design Plan for `kspecdr`
 
-> **Status**: P0 + P1 implemented — P2 next.
+> **Status**: P0 + P1 + P2 implemented — calibration pipeline complete.
 > **Last updated**: 2026-02-18
 
 ---
@@ -30,7 +30,9 @@ extracted counts to physical flux density (erg/s/cm²/Å).
 | Stellar template library | ✓ `fluxcal/templates.py` — `TemplateLibrary` (520 BOSZ models, auto-index), `prepare_template`, `resample_spectrum` |
 | Continuum normalization | ✓ `fluxcal/continuum.py` — B-spline / polynomial / running-median with iterative σ-clipping; model-continuum passthrough |
 | Template matching | ✓ `fluxcal/matching.py` — `select_best_template`, FFT cross-correlation RV (log-λ), χ² / Huber scoring |
-| Calibration vector computation | **None** — `fluxcal/calibration.py` planned (P2) |
+| Calibration vector computation | ✓ `fluxcal/calibration.py` — per-star vectors, robust combination, application with variance propagation |
+| Pipeline integration | ✓ `reduce_object.py:_apply_fluxcal` — reads TYPE='C' fibers, catalog, runs full pipeline |
+| Fiber type constant | ✓ `constants.py:FIBER_TYPE_CALIBRATION = 'C'` |
 
 ---
 
@@ -170,7 +172,7 @@ src/kspecdr/
 │   ├── templates.py                  # ✓ implemented (P1) — TemplateLibrary, prepare_template (§7)
 │   ├── continuum.py                  # ✓ implemented (P1) — normalize_continuum, fit_continuum (§8)
 │   ├── matching.py                   # ✓ implemented (P1) — select_best_template, cross_correlate_rv (§9)
-│   └── calibration.py                # planned (P2) — per-star cal vector, combination, application (§10)
+│   └── calibration.py                # ✓ implemented (P2) — per-star cal vector, combination, application (§10)
 │
 ├── data/
 │   ├── filters/                      # ✓ populated — filter transmission curves
@@ -553,7 +555,7 @@ def estimate_teff_from_colors(photometry, filter_curves=None):
 
 ---
 
-## 10. Calibration Vector Computation (`fluxcal/calibration.py`)
+## 10. Calibration Vector Computation (`fluxcal/calibration.py`) ✓ implemented
 
 ### Core functions
 
@@ -655,40 +657,41 @@ def combine_regions(*region_lists) -> List[tuple]:
 
 ---
 
-## 12. Integration with Existing Pipeline
+## 12. Integration with Existing Pipeline ✓ implemented
 
 ### Entry point: `reduce_object.py`
 
-Replace lines 232–241 (the `CALIBFLUX` block):
+The `CALIBFLUX` block now calls `_apply_fluxcal(red_filename, args)` which:
 
-```python
-if calflx:
-    from .fluxcal.calibration import (
-        compute_calibration_vector_for_star,
-        combine_calibration_vectors,
-        apply_flux_calibration,
-    )
-    from .fluxcal.photometry import (
-        load_standard_star_catalog,
-        photometry_from_catalog_row,
-    )
-    # 1. Identify standard-star fibers (TYPE == 'C') from FIBRES table
-    # 2. Load catalog, match by fiber NAME or position
-    # 3. For each standard: compute_calibration_vector_for_star(...)
-    # 4. combine_calibration_vectors(...)
-    # 5. apply_flux_calibration(...) to all fibers
-    # 6. Write back to RED file, update header
-```
+1. Opens the RED file, reads spectra/variance/wavelength/fiber table.
+2. Identifies standard-star fibers (``TYPE='C'``).
+3. Loads the standard-star catalog (``CALIBFLUX_CATALOG``).
+4. Loads the BOSZ template library and filter curves.
+5. For each standard: ``compute_calibration_vector_for_star(...)``
+6. ``combine_calibration_vectors(...)`` with sigma-clipping.
+7. ``apply_flux_calibration(...)`` to all fibers with variance propagation.
+8. Writes calibrated data and header keywords (``FLUXCAL``, ``BUNIT``,
+   ``FCALNSTR``, ``FCALRMS``, ``HISTORY``) back to the RED file.
+
+### Relevant ``args`` keys
+
+| Key | Type | Description |
+|---|---|---|
+| ``CALIBFLUX`` | bool | Enable flux calibration |
+| ``CALIBFLUX_CATALOG`` | str | Path to standard-star CSV catalog |
+| ``CALIBFLUX_FWHM`` | float | Instrument FWHM in Å (default: ``SPECFWHM`` header) |
+| ``CALIBFLUX_METRIC`` | str | ``"chi2"`` or ``"huber"`` (default: ``"chi2"``) |
+| ``CALIBFLUX_SMOOTH`` | bool | Smooth combined cal vector (default: False) |
 
 ### Changes to existing code
 
-| File | Change |
-|---|---|
-| `constants.py` | Add `FIBER_TYPE_CALIBRATION = 'C'` |
-| `inst/isoplane.py` | Update `target_class → TYPE` mapping to include `8 → 'C'` |
-| `io/image.py` : `read_fiber_types` | Recognize `'C'` as a valid type |
-| `extract/make_ex.py` | Ensure `'C'` fibers are extracted (not skipped) |
-| `__init__.py` | Add `fluxcal` to imports and `__all__` |
+| File | Change | Status |
+|---|---|---|
+| `constants.py` | Added `FIBER_TYPE_CALIBRATION = 'C'` and all fiber type codes | ✓ |
+| `reduce_object.py` | Replaced `NotImplementedError` with `_apply_fluxcal` call | ✓ |
+| `inst/isoplane.py` | Update `target_class → TYPE` mapping to include `8 → 'C'` | Pending (assign-file parser) |
+| `io/image.py` : `read_fiber_types` | Already accepts any single-char type from FIBRES table | No change needed |
+| `extract/make_ex.py` | Ensure `'C'` fibers are extracted (not skipped) | ✓ No change needed — zeroing loop only targets `'F'`, `'N'`, `'U'` |
 
 ---
 
@@ -711,8 +714,8 @@ No new external dependencies required.
 | **P1** | `templates.py` | ✓ **Done** — TemplateLibrary (auto-index, lazy load, wave trim), prepare_template |
 | **P1** | `continuum.py` | ✓ **Done** — B-spline / polynomial / running-median + model-continuum passthrough |
 | **P1** | `matching.py` | ✓ **Done** — select_best_template, FFT cross-correlation RV, χ² / Huber scoring |
-| **P2** | `calibration.py` | Per-star cal vectors, robust combination, application |
-| **P2** | Integration into `reduce_object.py` | Wire fluxcal into pipeline; add `'C'` fiber type |
+| **P2** | `calibration.py` | ✓ **Done** — scale_template_to_photometry, per-star vectors, weighted-mean/median combination, apply with variance propagation |
+| **P2** | Integration into `reduce_object.py` | ✓ **Done** — `_apply_fluxcal` reads TYPE='C' fibers, catalog, runs full pipeline; `FIBER_TYPE_CALIBRATION` added to constants |
 | **P3** | QC notebook helpers | Plotting utilities, summary tables (notebook-level) |
 
 ---

@@ -231,14 +231,7 @@ def reduce_object(args: Dict[str, Any]) -> None:
     # Flux calibration if requested
     calflx = args.get('CALIBFLUX', False)
     if calflx:
-        # Note not currently working so inform the user as an error (from Fortran)
-        # STATUS = DRS__NOIMPLEM
-        # CALL ERSREP('Flux calibration does NOT work!',STATUS)
-        # RETURN
-        # CALL CMFSOBJ_FLXCALIB(RED_ID,ARGS,STATUS)
-        logger.error("Flux calibration does NOT work!")
-        # Raising NotImplementedError to match behavior
-        raise NotImplementedError("Flux calibration does NOT work!")
+        _apply_fluxcal(red_filename, args)
 
     # Correction Via Transfer Function (if requested)
     tfn_cor = args.get('TRANSFUNC', False)
@@ -271,6 +264,220 @@ def reduce_object(args: Dict[str, Any]) -> None:
     logger.info("Object Frame Reduced")
     if verbose:
         logger.info(f"Reduction file {red_filename} created.")
+
+
+# ---------------------------------------------------------------------
+# Flux Calibration
+# ---------------------------------------------------------------------
+
+def _apply_fluxcal(red_filename: str, args: Dict[str, Any]) -> None:
+    """Apply spectrophotometric flux calibration to a reduced frame.
+
+    Identifies standard-star fibers (TYPE='C'), matches to BOSZ templates,
+    derives per-star calibration vectors, combines them, and applies the
+    result to all fibers.  Writes back to the RED file in place.
+
+    Parameters
+    ----------
+    red_filename : str
+        Path to the reduced FITS file (modified in place).
+    args : dict
+        Reduction arguments.  Relevant keys:
+
+        - ``CALIBFLUX_CATALOG`` : str — path to standard-star CSV catalog
+        - ``CALIBFLUX_FWHM`` : float — instrument FWHM in Å (default: from header SPECFWHM)
+        - ``CALIBFLUX_METRIC`` : str — scoring metric (default: ``"chi2"``)
+        - ``CALIBFLUX_SMOOTH`` : bool — smooth combined vector (default: False)
+    """
+    from .constants import FIBER_TYPE_CALIBRATION
+    from .io.image import ImageFile
+    from .fluxcal.calibration import (
+        compute_calibration_vector_for_star,
+        combine_calibration_vectors,
+        apply_flux_calibration,
+    )
+    from .fluxcal.photometry import (
+        load_filter_curves,
+        load_standard_star_catalog,
+        photometry_from_catalog_row,
+        DEFAULT_BANDS,
+    )
+    from .fluxcal.templates import TemplateLibrary
+    from .fluxcal.masks import load_mask_regions
+    from .fluxcal.containers import Spectrum1D
+
+    import numpy as np
+
+    # --- Load the RED file ---
+    with ImageFile(red_filename, mode='UPDATE') as red_file:
+        spectra = red_file.read_image_data()     # (NFIB, NPIX) or (NPIX, NFIB)
+        variance = red_file.read_variance_data()
+        fiber_types, nf = red_file.read_fiber_types(1000)
+        wave_data = red_file.read_wave_data()     # wavelength solution
+
+        # Determine wavelength axis (1-D common grid for scrunched data)
+        if wave_data is not None and wave_data.ndim == 1:
+            wavelength = wave_data
+        elif wave_data is not None and wave_data.ndim == 2:
+            wavelength = wave_data[0]  # use first fiber's wavelength
+        else:
+            nx, _ = red_file.get_size()
+            wavelength = np.arange(nx, dtype=float)
+            logger.warning("No wavelength solution found; using pixel indices")
+
+        # Determine data layout
+        if spectra.shape[0] == len(wavelength):
+            # (NPIX, NFIB) — transpose to (NFIB, NPIX) for processing
+            spectra = spectra.T
+            variance = variance.T
+            layout = "npix_nfib"
+        else:
+            layout = "nfib_npix"
+
+        nfib, npix = spectra.shape
+
+        # --- Identify standard-star fibers ---
+        std_indices = [
+            i for i in range(min(nfib, len(fiber_types)))
+            if fiber_types[i] == FIBER_TYPE_CALIBRATION
+        ]
+
+        if not std_indices:
+            logger.warning(
+                "CALIBFLUX requested but no fibers with TYPE='C' found. "
+                "Skipping flux calibration."
+            )
+            return
+
+        logger.info(
+            "Flux calibration: %d standard-star fibers (TYPE='C'): %s",
+            len(std_indices), std_indices,
+        )
+
+        # --- Load resources ---
+        catalog_path = args.get('CALIBFLUX_CATALOG')
+        if not catalog_path:
+            logger.error(
+                "CALIBFLUX_CATALOG not set. "
+                "Provide the path to the standard-star photometry CSV."
+            )
+            return
+
+        catalog = load_standard_star_catalog(catalog_path)
+        if len(catalog) == 0:
+            logger.error("Standard-star catalog is empty: %s", catalog_path)
+            return
+
+        library = TemplateLibrary()
+        filter_curves = load_filter_curves(DEFAULT_BANDS)
+        mask_regions = load_mask_regions("telluric_default")
+
+        instrument_fwhm = args.get('CALIBFLUX_FWHM')
+        if instrument_fwhm is None:
+            instrument_fwhm = red_file.get_header_value('SPECFWHM')
+            if instrument_fwhm is None:
+                instrument_fwhm = 3.0
+                logger.warning("Using default FWHM=%.1f Å", instrument_fwhm)
+            else:
+                instrument_fwhm = float(instrument_fwhm)
+
+        metric = args.get('CALIBFLUX_METRIC', 'chi2')
+        smooth = args.get('CALIBFLUX_SMOOTH', False)
+
+        # --- Compute per-star calibration vectors ---
+        cal_vectors = []
+        fiber_table = red_file.read_fiber_table() if red_file.has_fiber_table() else None
+
+        for idx, fib_idx in enumerate(std_indices):
+            # Extract observed spectrum for this fiber
+            obs_flux = spectra[fib_idx, :]
+            obs_var = variance[fib_idx, :]
+            obs_mask = np.isfinite(obs_flux) & (obs_var >= 0) & np.isfinite(obs_var)
+
+            obs_spec = Spectrum1D(
+                wavelength=wavelength.copy(),
+                flux=obs_flux.copy(),
+                variance=np.where(obs_var > 0, obs_var, 0.0),
+                mask=obs_mask,
+                meta={"fiber_id": fib_idx},
+            )
+
+            # Get star name from fiber table
+            star_name = ""
+            if fiber_table is not None:
+                try:
+                    star_name = str(fiber_table["NAME"][fib_idx]).strip()
+                except (KeyError, IndexError):
+                    pass
+
+            # Match to catalog row (by index for now; positional matching is TODO)
+            if idx < len(catalog):
+                row = catalog[idx]
+            else:
+                logger.warning(
+                    "More standard fibers (%d) than catalog rows (%d); "
+                    "skipping fiber %d",
+                    len(std_indices), len(catalog), fib_idx,
+                )
+                continue
+
+            phot = photometry_from_catalog_row(row)
+
+            try:
+                cal_vec = compute_calibration_vector_for_star(
+                    obs_spec, phot, library, filter_curves,
+                    instrument_fwhm_angstrom=instrument_fwhm,
+                    mask_regions=mask_regions,
+                    metric=metric,
+                    star_name=star_name,
+                    fiber_id=fib_idx,
+                )
+                cal_vectors.append(cal_vec)
+            except Exception as exc:
+                logger.warning(
+                    "Calibration failed for fiber %d (%s): %s",
+                    fib_idx, star_name, exc,
+                )
+                continue
+
+        if not cal_vectors:
+            logger.error(
+                "All standard-star calibrations failed. "
+                "Skipping flux calibration."
+            )
+            return
+
+        # --- Combine and apply ---
+        result = combine_calibration_vectors(
+            cal_vectors, method="weighted_mean", smooth=smooth,
+        )
+
+        cal_spectra, cal_variance, header_updates = apply_flux_calibration(
+            spectra, variance, result,
+        )
+
+        # --- Write back ---
+        if layout == "npix_nfib":
+            red_file.write_image_data(cal_spectra.T)
+            red_file.write_variance_data(cal_variance.T)
+        else:
+            red_file.write_image_data(cal_spectra)
+            red_file.write_variance_data(cal_variance)
+
+        # Update header
+        for key, val in header_updates.items():
+            if key == "HISTORY":
+                for h in val:
+                    red_file.set_header_value("HISTORY", h)
+            else:
+                value, comment = val
+                red_file.set_header_value(key, value, comment=comment)
+
+        logger.info(
+            "Flux calibration complete: %d standards, RMS=%.4f",
+            result.summary["n_stars_used"],
+            result.summary["rms_scatter"],
+        )
 
 
 # ---------------------------------------------------------------------
