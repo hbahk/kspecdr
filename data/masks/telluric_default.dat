@@ -1,0 +1,22 @@
+# Default telluric absorption mask for kspecdr flux calibration.
+#
+# Format: two whitespace-separated columns
+#   lam_lo  lam_hi   (Angstrom, vacuum wavelengths)
+#
+# Regions are set to mask=False in calibration vectors and continuum fits.
+# References:
+#   Smette et al. 2015 (Molecfit); Seifahrt et al. 2010; standard sky atlases.
+#
+# Region                lam_lo    lam_hi   (Angstrom)
+# ---------------------  --------  --------
+# O2 B-band              6860      6960
+# H2O                    7150      7340
+# O2 A-band              7590      7700
+# H2O                    8100      8360
+# H2O                    8920      9200
+# ---------------------  --------  --------
+6860.0    6960.0
+7150.0    7340.0
+7590.0    7700.0
+8100.0    8360.0
+8920.0    9200.0
