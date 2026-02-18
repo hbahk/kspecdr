@@ -1,6 +1,6 @@
 # Flux Calibration Design Plan for `kspecdr`
 
-> **Status**: Implementation plan — not yet implemented.
+> **Status**: P0 implemented — P1 next.
 > **Last updated**: 2026-02-18
 
 ---
@@ -19,12 +19,18 @@ extracted counts to physical flux density (erg/s/cm²/Å).
 | Area | Status |
 |---|---|
 | FITS I/O (`ImageFile`) | Done — Primary + VARIANCE + WAVELA + FIBRES extensions |
-| Spectrum container | **None** — data flows as bare `(flux, variance, wavelength)` numpy arrays |
+| Spectrum container | ✓ `fluxcal/containers.py` — `Spectrum1D`, `Photometry`, `FilterCurve`, `StellarTemplate`, `CalibrationVector`, `FluxCalibrationResult` |
 | Wavelength calibration | Done — arc line matching, polynomial fitting, scrunching |
 | Extraction with variance propagation | Done — `sum_extract` |
 | Fiber metadata | Done — FIBRES BinTableHDU with TYPE/NAME columns |
 | Flux calibration | **Stub only** — `reduce_object.py:232-241` raises `NotImplementedError` |
-| Photometry / template / flux-density utilities | **None** |
+| Photometry / flux-density utilities | ✓ `fluxcal/photometry.py` — AB mag conversions, filter loading, synthetic photometry, Refcat2 catalog I/O |
+| Filter curves | ✓ `data/filters/` — PS1 g/r/i/z/y, Gaia G/BP/RP, 2MASS J/H/K |
+| Telluric / region masks | ✓ `fluxcal/masks.py` + `data/masks/telluric_default.dat` |
+| Stellar template library | **None** — `fluxcal/templates.py` planned (P1) |
+| Continuum normalization | **None** — `fluxcal/continuum.py` planned (P1) |
+| Template matching | **None** — `fluxcal/matching.py` planned (P1) |
+| Calibration vector computation | **None** — `fluxcal/calibration.py` planned (P2) |
 
 ---
 
@@ -156,15 +162,15 @@ Apply:
 ```
 src/kspecdr/
 ├── fluxcal/                          # NEW top-level subpackage
-│   ├── __init__.py                   # ✓ created
+│   ├── __init__.py                   # ✓ created — exposes full P0 public API
 │   ├── download_bosz.py              # ✓ created — BOSZ 2024 subgrid downloader (§16)
-│   ├── containers.py                 # Dataclass definitions (§5)
-│   ├── photometry.py                 # AB mag ↔ flux, filter curves, synthetic phot (§6)
-│   ├── templates.py                  # TemplateLibrary (BOSZ 2024), resolution matching (§7)
-│   ├── continuum.py                  # Continuum normalization utilities (§8)
-│   ├── matching.py                   # Template selection, RV handling (§9)
-│   ├── calibration.py                # Per-star cal vector, combination, application (§10)
-│   └── masks.py                      # Telluric/bad-region mask I/O (§11)
+│   ├── containers.py                 # ✓ implemented (P0) — dataclass definitions (§5)
+│   ├── photometry.py                 # ✓ implemented (P0) — AB mag utils, filter loading, synthetic phot (§6)
+│   ├── masks.py                      # ✓ implemented (P0) — telluric/bad-region mask I/O (§11)
+│   ├── templates.py                  # planned (P1) — TemplateLibrary (BOSZ 2024), resolution matching (§7)
+│   ├── continuum.py                  # planned (P1) — continuum normalization utilities (§8)
+│   ├── matching.py                   # planned (P1) — template selection, RV handling (§9)
+│   └── calibration.py                # planned (P2) — per-star cal vector, combination, application (§10)
 │
 ├── data/
 │   ├── filters/                      # ✓ populated — filter transmission curves
@@ -179,8 +185,8 @@ src/kspecdr/
 │   │   ├── 2mass_j.dat               #   2MASS J/H/Ks
 │   │   ├── 2mass_h.dat
 │   │   └── 2mass_k.dat
-│   ├── masks/                        # NEW: telluric/bad-region definitions
-│   │   └── telluric_default.dat      #   list of (lam_lo, lam_hi) in Angstrom
+│   ├── masks/                        # ✓ populated
+│   │   └── telluric_default.dat      #   ✓ 5 regions: O₂ B, H₂O, O₂ A, H₂O×2
 │   └── templates/                    # gitignored — large downloaded grids
 │       └── bosz2024/                 # ✓ downloaded (520 files + wave grid)
 │           ├── bosz2024_wave_r10000.txt   # shared wavelength grid (Å)
@@ -193,148 +199,167 @@ src/kspecdr/
 
 ---
 
-## 5. Data Containers (`fluxcal/containers.py`)
+## 5. Data Containers (`fluxcal/containers.py`) ✓ implemented
 
 ```python
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-import numpy as np
-
-
 @dataclass
 class Spectrum1D:
-    """Wavelength-calibrated 1D spectrum with uncertainty and mask."""
-    wavelength: np.ndarray            # (N,) in Angstrom
-    flux: np.ndarray                  # (N,) in counts or flux-density units
-    variance: np.ndarray              # (N,)
-    mask: np.ndarray                  # (N,) bool — True = good pixel
+    wavelength: np.ndarray   # (N,) Angstrom
+    flux: np.ndarray         # (N,) counts or flux-density
+    variance: np.ndarray     # (N,)
+    mask: np.ndarray         # (N,) bool — True = good pixel
     meta: Dict = field(default_factory=dict)
+    # meta keys: fiber_id, fiber_name, exptime, bunit,
+    #            continuum (ndarray), rv_kms
 
-    @property
-    def ivar(self) -> np.ndarray:
-        good = self.mask & (self.variance > 0)
-        iv = np.zeros_like(self.variance)
-        iv[good] = 1.0 / self.variance[good]
-        return iv
+    # properties: .ivar, .n_pixels, .wave_range, .n_good
 
 
 @dataclass
 class Photometry:
-    """Broadband photometric measurements for a single source."""
-    filter_names: List[str]           # e.g. ["ps1_g", "ps1_r", "ps1_i"]
-    magnitudes: np.ndarray            # (Nbands,)
-    mag_errors: np.ndarray            # (Nbands,)
-    system: str = "AB"                # "AB" or "Vega"
+    filter_names: List[str]  # e.g. ["ps1_g", "gaia_g"]
+    magnitudes: np.ndarray   # (Nbands,) — all AB; nan = unavailable band
+    mag_errors: np.ndarray   # (Nbands,)
+    meta: Dict = field(default_factory=dict)
+    # meta keys: ra, dec, objid, teff_catalog, a_gaia, a_g
+
+    # methods: .get_band(name) → (mag, err), .valid_bands() → List[str]
 
 
 @dataclass
 class FilterCurve:
-    """Transmission curve for one photometric filter."""
     name: str
-    wavelength: np.ndarray            # (M,) in Angstrom
-    transmission: np.ndarray          # (M,) dimensionless, 0–1
-    ab_zeropoint_fnu: float = 3.631e-20  # erg/s/cm²/Hz (AB system default)
+    wavelength: np.ndarray    # (M,) Angstrom (converted from µm on load)
+    transmission: np.ndarray  # (M,) 0–1
+    system: str = "AB"        # "AB" or "Vega"
+    vega_to_ab: float = 0.0   # m_AB = m_Vega + vega_to_ab
+
+    # properties: .wave_eff (Å), .wave_range (lo, hi at 1% of peak)
 
 
 @dataclass
 class StellarTemplate:
-    """A single BOSZ 2024 stellar model spectrum with its grid parameters."""
-    wavelength: np.ndarray            # (K,) in Angstrom (on the r10000 log-λ grid)
-    flux: np.ndarray                  # (K,) in erg/s/cm²/Å  (= 4π × H from file)
-    continuum: np.ndarray             # (K,) theoretical continuum — provided by BOSZ
+    wavelength: np.ndarray    # (K,) Angstrom (BOSZ r10000 log-λ grid)
+    flux: np.ndarray          # (K,) erg/s/cm²/Å  (= 4π × H, col 3)
+    continuum: np.ndarray     # (K,) theoretical continuum (= 4π × C, col 4)
     teff: float
     logg: float
-    feh: float                        # [M/H]
-    alpha_m: float = 0.0              # [α/M]
-    carbon_m: float = 0.0             # [C/M]
-    vmicro: float = 1.0               # km/s
-    atmos_model: str = ""             # "ap" (ATLAS9) or "mp"/"ms" (MARCS)
-    source: str = "BOSZ2024"          # filename for provenance
+    feh: float                # [M/H]
+    alpha_m: float = 0.0      # [α/M]
+    carbon_m: float = 0.0     # [C/M]
+    vmicro: float = 1.0       # km/s
+    atmos_model: str = ""     # "ap" (ATLAS9) or "mp" (MARCS)
+    source: str = "BOSZ2024"
+
+    # methods: .to_spectrum1d() → Spectrum1D, .label → str
 
 
 @dataclass
 class CalibrationVector:
-    """Calibration curve mapping counts → physical flux density."""
-    wavelength: np.ndarray            # (N,)
-    cal_factor: np.ndarray            # (N,) multiply counts by this → flux
-    cal_variance: np.ndarray          # (N,) variance on cal_factor
-    mask: np.ndarray                  # (N,) bool — True = reliable
+    wavelength: np.ndarray    # (N,) Angstrom
+    cal_factor: np.ndarray    # (N,) erg/s/cm²/Å per count
+    cal_variance: np.ndarray  # (N,)
+    mask: np.ndarray          # (N,) bool — True = reliable
     meta: Dict = field(default_factory=dict)
-    # meta keys: star_name, teff, logg, feh, chi2, scale_factor, band_residuals
+    # meta keys: star_name, fiber_id, teff, logg, feh, alpha_m,
+    #            scale_factor, band_residuals, chi2, ndof, rv_kms
+
+    # properties: .cal_error, .n_good
 
 
 @dataclass
 class FluxCalibrationResult:
-    """Complete output of the flux calibration procedure."""
     combined_vector: CalibrationVector
     per_star_vectors: List[CalibrationVector]
-    per_star_residuals: List[np.ndarray]      # (N,) fractional residuals
+    per_star_residuals: List[np.ndarray]   # fractional residuals per star
     summary: Dict = field(default_factory=dict)
-    # summary keys: n_stars_used, rms_scatter, wavelength_range,
-    #               rejected_fraction, per_star_metrics
+    # summary keys: n_stars_used, n_stars_rejected, rms_scatter,
+    #               wavelength_range, per_star_metrics
+
+    # properties: .n_stars
 ```
 
 ---
 
-## 6. Photometry Utilities (`fluxcal/photometry.py`)
+## 6. Photometry Utilities (`fluxcal/photometry.py`) ✓ implemented
+
+### Filter registry
+
+`FILTER_INFO` dict maps each filter name to `{"system", "vega_to_ab"}`.
+All 11 filters are registered (PS1 g/r/i/z/y, Gaia G/BP/RP, 2MASS J/H/K).
+
+Vega-to-AB offsets used:
+
+| Filter | vega_to_ab | Reference |
+|---|---|---|
+| Gaia G | +0.1069 | Maíz Apellániz & Weiler 2018 |
+| Gaia BP | +0.0676 | Evans+ 2018 |
+| Gaia RP | −0.3958 | Evans+ 2018 |
+| 2MASS J | +0.91 | Blanton & Roweis 2007 |
+| 2MASS H | +1.39 | Blanton & Roweis 2007 |
+| 2MASS K | +1.85 | Blanton & Roweis 2007 |
 
 ### Functions
 
 ```python
-def ab_mag_to_flux_density(mag, mag_err=None, unit="f_lambda",
-                           wavelength_eff=None):
-    """AB mag → flux density (f_lambda or f_nu) with error propagation."""
+# --- Unit conversions ---
+def ab_mag_to_fnu(mag, mag_err=None) -> (fnu, fnu_err):
+    """AB mag → f_ν (erg/s/cm²/Hz) with error propagation."""
 
-def flux_density_to_ab_mag(flux, flux_err=None, unit="f_lambda",
-                           wavelength_eff=None):
-    """Inverse of ab_mag_to_flux_density."""
+def fnu_to_ab_mag(fnu, fnu_err=None) -> (mag, mag_err):
+    """f_ν (erg/s/cm²/Hz) → AB mag."""
 
+def ab_mag_to_flam(mag, wave_eff_ang, mag_err=None) -> (flam, flam_err):
+    """AB mag → f_λ (erg/s/cm²/Å) at effective wavelength.
+    f_λ = f_ν × c / λ²
+    """
+
+# --- Filter I/O ---
 def load_filter_curve(filter_name: str) -> FilterCurve:
-    """Load filter from data/filters/{filter_name}.dat."""
+    """Load from data/filters/{filter_name}.dat; convert µm → Å; cache."""
 
-def synthetic_photometry(spectrum, filter_curve) -> float:
-    """Compute synthetic AB mag of a spectrum through a filter.
+def load_filter_curves(filter_names) -> Dict[str, FilterCurve]:
+    """Load multiple filters at once."""
 
-    <f_nu> = ∫ f_nu(ν) T(ν) d(ln ν) / ∫ T(ν) d(ln ν)
-    mag_AB = -2.5 log10(<f_nu>) - 48.60
+# --- Synthetic photometry ---
+def synthetic_photometry(spectrum: Spectrum1D,
+                          filter_curve: FilterCurve) -> float:
+    """Photon-count weighted synthetic AB mag.
+
+    <f_ν> = ∫ f_ν T d(ln λ) / ∫ T d(ln λ)
+    m_AB  = -2.5 log10(<f_ν>) - 48.60
+    Returns nan if filter not covered or flux non-physical.
+    Verified: exact recovery for flat f_ν spectra.
     """
 
-def load_standard_star_catalog(catalog_path: str) -> Table:
-    """Load an ATLAS Refcat2–format CSV catalog.
+def synthetic_color(spectrum, filter1, filter2) -> float:
+    """Synthetic color m_filter1 − m_filter2 (AB mags)."""
 
-    Returns an astropy Table with all photometric columns.
+# --- Catalog I/O ---
+def load_standard_star_catalog(catalog_path) -> astropy.table.Table:
+    """Load ATLAS Refcat2-format CSV; returns full astropy Table."""
+
+def photometry_from_catalog_row(row, bands=DEFAULT_BANDS) -> Photometry:
+    """Extract Photometry from one Refcat2 row.
+
+    - Applies Vega→AB corrections automatically.
+    - Sentinel values (mag ≥ 99 or err ≥ 9.9) stored as nan.
+    - Populates meta with ra, dec, objid, teff_catalog, a_gaia, a_g.
     """
 
-def photometry_from_catalog_row(row, bands=None) -> Photometry:
-    """Extract a Photometry object from one row of the catalog table.
+# --- Color → Teff ---
+def estimate_teff_from_color(photometry, method="bp_rp") -> (teff, teff_range):
+    """Rough photometric Teff estimate.
 
-    Parameters
-    ----------
-    row : astropy.table.Row
-        One row from the standard star catalog.
-    bands : list of str, optional
-        Which bands to extract. Default: ["g", "r", "i", "z", "Gaia",
-        "BP", "RP", "J", "H", "K"].
+    method="bp_rp" : Gaia BP−RP (recommended; Casagrande+ 2010 polynomial)
+    method="g_r"   : PS1 g−r (fallback)
+    Returns (teff_K, (teff_lo, teff_hi)) with ±600 K search window.
     """
 
-# --- Placeholder for future catalog queries ---
+# --- Placeholder ---
 def query_photometry(ra, dec, radius_arcsec=2.0, catalog="refcat2"):
-    """Query an external catalog for photometry (NOT YET IMPLEMENTED).
-
-    Raises NotImplementedError with a message pointing to
-    load_standard_star_catalog as the current alternative.
-    """
+    """NOT YET IMPLEMENTED. Raises NotImplementedError."""
 ```
-
-### Notes
-
-- The Refcat2 g, r, i, z bands are on the **Pan-STARRS** system, not SDSS.
-  Filter curves and zero-points must match. The AB zero-point is the same, but
-  the bandpasses differ.
-- Gaia G, BP, RP are on the Vega-like system natively but have well-known AB
-  offsets. Handle in `synthetic_photometry` by checking `FilterCurve` metadata.
-- 2MASS J, H, K are Vega-system. Conversion constants to AB should be stored
-  with the filter curves or in a lookup table.
 
 ---
 
@@ -585,32 +610,43 @@ def apply_flux_calibration(spectra, variance, calibration,
 
 ---
 
-## 11. Masks (`fluxcal/masks.py`)
+## 11. Masks (`fluxcal/masks.py`) ✓ implemented
+
+### Default telluric mask (`data/masks/telluric_default.dat`)
+
+| Region | λ range (Å) |
+|---|---|
+| O₂ B-band | 6860–6960 |
+| H₂O | 7150–7340 |
+| O₂ A-band | 7590–7700 |
+| H₂O | 8100–8360 |
+| H₂O | 8920–9200 |
+
+### Functions
 
 ```python
-def load_mask_regions(mask_name="telluric_default"):
-    """Load wavelength regions from data/masks/{mask_name}.dat.
-
-    File format: two-column ASCII, lam_lo lam_hi (Angstrom).
-
-    Returns
-    -------
-    list of (float, float)
+def load_mask_regions(mask_name="telluric_default") -> List[tuple]:
+    """Load (lam_lo, lam_hi) pairs from data/masks/{mask_name}.dat.
+    Cached after first load. Comment lines (#) ignored.
     """
 
-def apply_mask_regions(spectrum, regions):
-    """Set mask=False for pixels in any region. Returns new Spectrum1D."""
+def load_mask_array(wavelength, mask_name="telluric_default") -> np.ndarray:
+    """Boolean array for a given wavelength axis (True = good pixel)."""
+
+def apply_mask_regions(spectrum: Spectrum1D,
+                        regions: List[tuple]) -> Spectrum1D:
+    """Return new Spectrum1D with mask=False inside each region."""
+
+def apply_named_mask(spectrum: Spectrum1D,
+                      mask_name="telluric_default") -> Spectrum1D:
+    """Convenience: load mask by name and apply in one call."""
+
+def mask_coverage_fraction(wavelength, mask_name="telluric_default") -> float:
+    """Fraction of pixels inside the mask; large values suggest unit error."""
+
+def combine_regions(*region_lists) -> List[tuple]:
+    """Merge multiple region lists, sorted by start wavelength."""
 ```
-
-### Default telluric mask regions
-
-| Region | λ range (Å) | Source |
-|---|---|---|
-| O₂ B-band | 6860–6960 | telluric |
-| O₂ A-band | 7590–7700 | telluric |
-| H₂O | 7150–7340 | telluric |
-| H₂O | 8100–8350 | telluric |
-| H₂O | 8925–9200 | telluric |
 
 ---
 
@@ -664,14 +700,15 @@ No new external dependencies required.
 
 ## 14. Implementation Priority
 
-| Phase | Modules | Notes |
+| Phase | Modules | Status |
 |---|---|---|
-| **P0** | `containers.py`, `photometry.py`, `masks.py` | Foundational types and utilities |
-| **P1** | `templates.py`, `continuum.py` | Template loading, resolution matching, continuum fitting |
-| **P1** | `matching.py` | Template selection and RV handling |
-| **P2** | `calibration.py` | Orchestration: per-star vectors, combination, application |
-| **P2** | Integration into `reduce_object.py` | Wire into existing pipeline, update fiber type handling |
-| **P3** | QC notebook helpers | Plotting utilities, summary tables (notebook-level, not in pipeline) |
+| **P0** | `containers.py`, `photometry.py`, `masks.py` | ✓ **Done** |
+| **P1** | `templates.py` | Next — BOSZ file I/O, TemplateLibrary index, `prepare_template` |
+| **P1** | `continuum.py` | Next — B-spline / polynomial normalization with sigma-clipping |
+| **P1** | `matching.py` | Next — template selection, RV cross-correlation |
+| **P2** | `calibration.py` | Per-star cal vectors, robust combination, application |
+| **P2** | Integration into `reduce_object.py` | Wire fluxcal into pipeline; add `'C'` fiber type |
+| **P3** | QC notebook helpers | Plotting utilities, summary tables (notebook-level) |
 
 ---
 
@@ -684,7 +721,7 @@ No new external dependencies required.
 | Pan-STARRS1 filter curves (g/r/i/z/y) | Tonry et al. 2012 (via SVO FPS) | ✓ `data/filters/ps1_*.dat` |
 | Gaia DR2 passbands (G/BP/RP) | Evans et al. 2018 (via ESA) | ✓ `data/filters/gaia_*.dat` |
 | 2MASS filter curves (J/H/Ks) | Cohen et al. 2003 | ✓ `data/filters/2mass_*.dat` |
-| Telluric mask | Define manually | Pending — `data/masks/telluric_default.dat` |
+| Telluric mask | Defined manually (5 regions) | ✓ `data/masks/telluric_default.dat` |
 | Standard star catalog | ATLAS Refcat2 | ✓ Example: `resources/comm/20260129/calib/standard_star_atlas_refcat2.csv` |
 
 ---
