@@ -1,7 +1,7 @@
 # Flux Calibration Design Plan for `kspecdr`
 
 > **Status**: Implementation plan — not yet implemented.
-> **Last updated**: 2026-02-17
+> **Last updated**: 2026-02-18
 
 ---
 
@@ -32,9 +32,37 @@ extracted counts to physical flux density (erg/s/cm²/Å).
 
 ### 2.1 Template Library
 
-Use the **PHOENIX/BT-Settl** grid as the starting point. These are freely
-available, cover F-star parameter space well, and come as FITS files with
-well-documented wavelength grids.
+Use the **BOSZ 2024** synthetic stellar spectral library (Mészáros et al. 2024,
+MAST HLSP), based on ATLAS9 and MARCS model atmospheres. BOSZ is preferred over
+PHOENIX/BT-Settl for this use case because:
+
+- Calibrated against HST/STIS CALSPEC flux standards — directly relevant for
+  spectrophotometric calibration.
+- Each file contains a **continuum column** (theoretical continuum), usable as
+  a first-pass normalization without fitting a spline.
+- Pre-computed at multiple resolutions (R = 500–50,000) — download at
+  R = 10,000, convolve down to the instrument LSF, avoiding full-resolution
+  computation.
+- Filenames encode all parameters — trivial to build an index without reading
+  file contents.
+- Updated Sept 2025 (OH+ and H-line bug fixes); actively maintained.
+
+**Downloaded subgrid** (`data/templates/bosz2024/`, gitignored):
+
+| Parameter | Values |
+|---|---|
+| Resolution | R = 10,000 (`r10000`) |
+| Teff | 5000–8000 K, step 250 K (13 values) |
+| log(g) | 3.5, 4.0, 4.5, 5.0 |
+| [M/H] | −1.00 to +0.50, step 0.25 (7 values) |
+| [α/M] | 0.00 for all; +0.25 additionally for [M/H] ≤ −0.50 |
+| [C/M] | 0.00 |
+| vmicro | 1 km/s |
+| atmos | `mp` (MARCS plane-parallel) for Teff 5000–7250 K |
+|        | `ap` (ATLAS9 plane-parallel) for Teff 7500–8000 K |
+| Total | **520 model files** + 1 shared wavelength grid |
+
+**Re-download**: `python -m kspecdr.fluxcal.download_bosz` (see §16).
 
 ### 2.2 Fiber Type Codes
 
@@ -101,7 +129,7 @@ For each standard star on the plate:
   1. Load observed spectrum from RED file (fiber with TYPE='C')
   2. Load broadband photometry from catalog CSV
   3. Estimate Teff from broadband colors → narrow template search range
-  4. For each candidate template in the (narrowed) PHOENIX grid:
+  4. For each candidate template in the (narrowed) BOSZ subgrid:
      a. Convolve to instrument resolution (FWHM from DISPERS header)
      b. Resample to observed wavelength grid
      c. Cross-correlate to measure/correct RV shift
@@ -128,34 +156,39 @@ Apply:
 ```
 src/kspecdr/
 ├── fluxcal/                          # NEW top-level subpackage
-│   ├── __init__.py
+│   ├── __init__.py                   # ✓ created
+│   ├── download_bosz.py              # ✓ created — BOSZ 2024 subgrid downloader (§16)
 │   ├── containers.py                 # Dataclass definitions (§5)
 │   ├── photometry.py                 # AB mag ↔ flux, filter curves, synthetic phot (§6)
-│   ├── templates.py                  # TemplateLibrary, resolution matching (§7)
+│   ├── templates.py                  # TemplateLibrary (BOSZ 2024), resolution matching (§7)
 │   ├── continuum.py                  # Continuum normalization utilities (§8)
 │   ├── matching.py                   # Template selection, RV handling (§9)
 │   ├── calibration.py                # Per-star cal vector, combination, application (§10)
 │   └── masks.py                      # Telluric/bad-region mask I/O (§11)
 │
 ├── data/
-│   ├── filters/                      # NEW: filter transmission curves
-│   │   ├── sdss_u.dat                #   (or use SVO FPS naming convention)
-│   │   ├── sdss_g.dat
-│   │   ├── sdss_r.dat
-│   │   ├── sdss_i.dat
-│   │   ├── sdss_z.dat
-│   │   ├── ps1_g.dat                 #   Pan-STARRS bands (Refcat2 uses these)
+│   ├── filters/                      # ✓ populated — filter transmission curves
+│   │   ├── ps1_g.dat                 #   Pan-STARRS1 g (Tonry+ 2012)
 │   │   ├── ps1_r.dat
 │   │   ├── ps1_i.dat
 │   │   ├── ps1_z.dat
-│   │   ├── gaia_g.dat
+│   │   ├── ps1_y.dat
+│   │   ├── gaia_g.dat                #   Gaia DR2 G/BP/RP (Evans+ 2018)
 │   │   ├── gaia_bp.dat
 │   │   ├── gaia_rp.dat
-│   │   ├── 2mass_j.dat
+│   │   ├── 2mass_j.dat               #   2MASS J/H/Ks
 │   │   ├── 2mass_h.dat
 │   │   └── 2mass_k.dat
-│   └── masks/                        # NEW: telluric/bad-region definitions
-│       └── telluric_default.dat      #   list of (lam_lo, lam_hi) in Angstrom
+│   ├── masks/                        # NEW: telluric/bad-region definitions
+│   │   └── telluric_default.dat      #   list of (lam_lo, lam_hi) in Angstrom
+│   └── templates/                    # gitignored — large downloaded grids
+│       └── bosz2024/                 # ✓ downloaded (520 files + wave grid)
+│           ├── bosz2024_wave_r10000.txt   # shared wavelength grid (Å)
+│           └── r10000/
+│               ├── m-1.00/
+│               ├── m-0.75/
+│               ├── ...
+│               └── m+0.50/
 ```
 
 ---
@@ -205,13 +238,18 @@ class FilterCurve:
 
 @dataclass
 class StellarTemplate:
-    """A single stellar model spectrum with its grid parameters."""
-    wavelength: np.ndarray            # (K,) in Angstrom (native resolution)
-    flux: np.ndarray                  # (K,) in erg/s/cm²/Å (surface flux)
+    """A single BOSZ 2024 stellar model spectrum with its grid parameters."""
+    wavelength: np.ndarray            # (K,) in Angstrom (on the r10000 log-λ grid)
+    flux: np.ndarray                  # (K,) in erg/s/cm²/Å  (= 4π × H from file)
+    continuum: np.ndarray             # (K,) theoretical continuum — provided by BOSZ
     teff: float
     logg: float
-    feh: float                        # [Fe/H]
-    source: str = ""                  # e.g. "BT-Settl", filename
+    feh: float                        # [M/H]
+    alpha_m: float = 0.0              # [α/M]
+    carbon_m: float = 0.0             # [C/M]
+    vmicro: float = 1.0               # km/s
+    atmos_model: str = ""             # "ap" (ATLAS9) or "mp"/"ms" (MARCS)
+    source: str = "BOSZ2024"          # filename for provenance
 
 
 @dataclass
@@ -306,34 +344,88 @@ def query_photometry(ra, dec, radius_arcsec=2.0, catalog="refcat2"):
 
 ```python
 class TemplateLibrary:
-    """Indexed library of PHOENIX/BT-Settl stellar template spectra.
+    """Indexed library of BOSZ 2024 stellar template spectra.
 
     Parameters
     ----------
     library_dir : str or Path
-        Directory containing template FITS files.
+        Root directory of the template subgrid
+        (e.g. data/templates/bosz2024/).
+        Must contain bosz2024_wave_r10000.txt and r10000/<feh>/*.txt.gz files.
+    resolution : str
+        Subdirectory / resolution tag to use. Default: "r10000".
     index_file : str or Path, optional
-        Pre-built CSV index (filename, Teff, logg, [Fe/H]).
-        If None, scans library_dir on first load and caches.
+        Pre-built CSV index (filepath, teff, logg, feh, alpha_m, atmos).
+        If None, scans library_dir on first load and caches to
+        library_dir/index_r10000.csv.
     """
 
-    def __init__(self, library_dir, index_file=None): ...
+    def __init__(self, library_dir, resolution="r10000",
+                 index_file=None): ...
 
-    def get_template(self, teff, logg, feh) -> StellarTemplate:
-        """Nearest-grid-point lookup."""
+    def get_template(self, teff, logg, feh,
+                     alpha_m=None) -> StellarTemplate:
+        """Nearest-grid-point lookup (5-D: Teff, logg, [M/H], [α/M], atmos).
+
+        alpha_m defaults to 0.00 (or 0.25 for [M/H] ≤ −0.50 if 0.00
+        is not present in the subgrid).
+        """
 
     def query(self, teff_range=None, logg_range=None,
               feh_range=None) -> List[StellarTemplate]:
-        """Return templates within parameter box."""
+        """Return templates within parameter box (metadata only, lazy load)."""
 
     @property
     def grid_params(self) -> np.ndarray:
-        """(N_templates, 3) array of [Teff, logg, [Fe/H]]."""
+        """(N_templates, 4) array of [Teff, logg, [M/H], [α/M]]."""
 ```
+
+### BOSZ file format
+
+Each `*.txt.gz` file is whitespace-separated ASCII with **no header**. The
+columns are:
+
+| Col | Content | Unit |
+|---|---|---|
+| 1 | Wavelength | Å |
+| 2 | Normalized flux (F/C) | dimensionless |
+| 3 | Flux density (H) | erg/s/cm²/Å/steradian |
+| 4 | Continuum (C) | erg/s/cm²/Å/steradian |
+
+Use columns 1, 3, and 4 (wavelength, flux, continuum). Convert H → F via
+`F = 4π × H` to get surface flux in erg/s/cm²/Å.
+
+The shared wavelength grid is in `bosz2024_wave_r10000.txt` (single column, Å).
+Files are read with `numpy.loadtxt` on the decompressed stream:
+
+```python
+import gzip
+import numpy as np
+
+with gzip.open(filepath, "rt") as f:
+    data = np.loadtxt(f, usecols=(0, 2, 3))   # wave, H, C
+wave  = data[:, 0]
+flux  = 4 * np.pi * data[:, 1]
+cont  = 4 * np.pi * data[:, 2]
+```
+
+### BOSZ filename convention
+
+```
+bosz2024_{atmos}_t{Teff}_g+{logg}_m{feh:+.2f}_a{alpha_m:+.2f}_c{carbon_m:+.2f}_v{vmicro}_r10000_resam.txt.gz
+```
+
+Example: `bosz2024_mp_t6000_g+4.0_m+0.00_a+0.00_c+0.00_v1_r10000_resam.txt.gz`
+
+The index builder should parse these fields from the filename with a regex to
+avoid reading file contents.
 
 ### Utility functions
 
 ```python
+def parse_bosz_filename(filename: str) -> dict:
+    """Parse BOSZ filename → {atmos, teff, logg, feh, alpha_m, carbon_m, vmicro}."""
+
 def prepare_template(template, target_wavelength,
                      instrument_fwhm_angstrom) -> Spectrum1D:
     """Convolve to instrument resolution, resample to observed grid.
@@ -341,20 +433,12 @@ def prepare_template(template, target_wavelength,
     Uses scipy.ndimage.gaussian_filter1d for convolution and
     scipy.interpolate.interp1d for resampling.
     Returns Spectrum1D with variance=0, mask=True everywhere.
+    The BOSZ continuum column is carried through as meta['continuum'].
     """
 
 def resample_spectrum(wave_in, flux_in, wave_out) -> np.ndarray:
     """General resampling utility (extracted from wavecal/scrunch.py)."""
 ```
-
-### PHOENIX/BT-Settl file convention
-
-BT-Settl FITS filenames encode parameters:
-`lte{Teff/100}-{logg}{+/-feh}.BT-Settl.spec.fits`
-
-Example: `lte060-4.5-0.0.BT-Settl.spec.fits` → Teff=6000, logg=4.5, [Fe/H]=0.0
-
-The loader should parse these filenames to build the index automatically.
 
 ---
 
@@ -591,11 +675,39 @@ No new external dependencies required.
 
 ---
 
-## 15. Data Files Needed
+## 15. Data Files Status
 
-| File | Source | Notes |
+| File / Set | Source | Status |
 |---|---|---|
-| PHOENIX/BT-Settl grid | [PHOENIX website](https://phoenix.astro.physik.uni-goettingen.de/) | Download F-star parameter range first: Teff 5500–7500 K, logg 3.0–5.0, [Fe/H] -1.0 to +0.5 |
-| Filter curves | [SVO FPS](http://svo2.cab.inta-csic.es/theory/fps/) | Pan-STARRS g/r/i/z, Gaia G/BP/RP, 2MASS J/H/K |
-| Telluric mask | Define manually | Table of (λ_lo, λ_hi) pairs |
-| Standard star catalog | ATLAS Refcat2 query | Already have example: `standard_star_atlas_refcat2.csv` |
+| BOSZ 2024 template subgrid (520 files) | [MAST HLSP BOSZ](https://archive.stsci.edu/hlsp/bosz) | ✓ Downloaded — `data/templates/bosz2024/` |
+| BOSZ shared wavelength grid | MAST HLSP BOSZ | ✓ Downloaded — `bosz2024_wave_r10000.txt` |
+| Pan-STARRS1 filter curves (g/r/i/z/y) | Tonry et al. 2012 (via SVO FPS) | ✓ `data/filters/ps1_*.dat` |
+| Gaia DR2 passbands (G/BP/RP) | Evans et al. 2018 (via ESA) | ✓ `data/filters/gaia_*.dat` |
+| 2MASS filter curves (J/H/Ks) | Cohen et al. 2003 | ✓ `data/filters/2mass_*.dat` |
+| Telluric mask | Define manually | Pending — `data/masks/telluric_default.dat` |
+| Standard star catalog | ATLAS Refcat2 | ✓ Example: `resources/comm/20260129/calib/standard_star_atlas_refcat2.csv` |
+
+---
+
+## 16. Template Download Utility (`fluxcal/download_bosz.py`)
+
+The subgrid download is implemented as a runnable module:
+
+```
+python -m kspecdr.fluxcal.download_bosz            # full download
+python -m kspecdr.fluxcal.download_bosz --dry-run  # preview URLs only
+python -m kspecdr.fluxcal.download_bosz --force    # re-download all files
+```
+
+Run from the repository root with the package installed (or with
+`PYTHONPATH=src` set).
+
+**Source**: `src/kspecdr/fluxcal/download_bosz.py`
+
+Key design points:
+- `ThreadPoolExecutor(max_workers=8)` — 8 concurrent downloads from MAST.
+- 3-retry loop with 2 s back-off on transient HTTP errors.
+- Skips existing non-empty files by default (`skip_existing=True`).
+- Logs per-file status and a final summary (ok / skipped / not_found / error).
+- `not_found` entries are expected for (Teff, logg) pairs outside the BOSZ
+  physical grid boundaries; they do not indicate a bug.

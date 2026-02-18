@@ -9,6 +9,9 @@ identified_arcs.dat
 global_fit_coefficients.dat
 CrsCgm0.fits
 
+# Large data files (templates, downloaded grids) — not tracked in git
+data/templates/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
