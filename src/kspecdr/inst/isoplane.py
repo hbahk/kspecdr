@@ -382,7 +382,7 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     flip_horizontal = i_ori_uncorr_horizontal * i_ori_result_horizontal
     new_header["FLIPHORI"] = (flip_horizontal, "Flip horizontal orientation")
     logger.debug(f"flip_horizontal: {flip_horizontal}")
-    logger.debug(f"FLIPHORI: {new_header["FLIPHORI"]}")
+    logger.debug(f"FLIPHORI: {new_header['FLIPHORI']}")
     
     
     # Vertical orientation of the detector readout
