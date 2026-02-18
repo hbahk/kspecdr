@@ -16,12 +16,23 @@ photometry
 masks
     Telluric / bad-region mask I/O and application
 
-Planned (P1 / P2)
------------------
-templates    — TemplateLibrary (BOSZ 2024), resolution matching, resampling
-continuum    — Continuum normalization (B-spline, polynomial, running-median)
-matching     — Template selection, RV cross-correlation
-calibration  — Per-star and combined calibration vectors, application
+Implemented (P1)
+----------------
+templates
+    :class:`~.templates.TemplateLibrary` (BOSZ 2024 index, lazy load),
+    :func:`~.templates.prepare_template`, :func:`~.templates.resample_spectrum`
+continuum
+    :func:`~.continuum.normalize_continuum` (B-spline / polynomial /
+    running-median with iterative sigma-clipping),
+    :func:`~.continuum.normalize_with_model_continuum`
+matching
+    :func:`~.matching.select_best_template`,
+    :func:`~.matching.cross_correlate_rv`,
+    :func:`~.matching.score_template_fit`
+
+Planned (P2)
+------------
+calibration  — Per-star and combined calibration vectors, application to science spectra
 
 Utilities
 ---------
@@ -36,10 +47,20 @@ from .containers import (
     Spectrum1D,
     StellarTemplate,
 )
+from .continuum import (
+    fit_continuum,
+    normalize_continuum,
+    normalize_with_model_continuum,
+)
 from .masks import (
     apply_mask_regions,
     apply_named_mask,
     load_mask_regions,
+)
+from .matching import (
+    cross_correlate_rv,
+    score_template_fit,
+    select_best_template,
 )
 from .photometry import (
     DEFAULT_BANDS,
@@ -53,6 +74,12 @@ from .photometry import (
     load_standard_star_catalog,
     photometry_from_catalog_row,
     synthetic_photometry,
+)
+from .templates import (
+    TemplateLibrary,
+    parse_bosz_filename,
+    prepare_template,
+    resample_spectrum,
 )
 
 __all__ = [
@@ -79,4 +106,17 @@ __all__ = [
     "load_mask_regions",
     "apply_mask_regions",
     "apply_named_mask",
+    # templates
+    "TemplateLibrary",
+    "parse_bosz_filename",
+    "prepare_template",
+    "resample_spectrum",
+    # continuum
+    "normalize_continuum",
+    "normalize_with_model_continuum",
+    "fit_continuum",
+    # matching
+    "select_best_template",
+    "cross_correlate_rv",
+    "score_template_fit",
 ]

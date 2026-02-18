@@ -1,6 +1,6 @@
 # Flux Calibration Design Plan for `kspecdr`
 
-> **Status**: P0 implemented — P1 next.
+> **Status**: P0 + P1 implemented — P2 next.
 > **Last updated**: 2026-02-18
 
 ---
@@ -27,9 +27,9 @@ extracted counts to physical flux density (erg/s/cm²/Å).
 | Photometry / flux-density utilities | ✓ `fluxcal/photometry.py` — AB mag conversions, filter loading, synthetic photometry, Refcat2 catalog I/O |
 | Filter curves | ✓ `data/filters/` — PS1 g/r/i/z/y, Gaia G/BP/RP, 2MASS J/H/K |
 | Telluric / region masks | ✓ `fluxcal/masks.py` + `data/masks/telluric_default.dat` |
-| Stellar template library | **None** — `fluxcal/templates.py` planned (P1) |
-| Continuum normalization | **None** — `fluxcal/continuum.py` planned (P1) |
-| Template matching | **None** — `fluxcal/matching.py` planned (P1) |
+| Stellar template library | ✓ `fluxcal/templates.py` — `TemplateLibrary` (520 BOSZ models, auto-index), `prepare_template`, `resample_spectrum` |
+| Continuum normalization | ✓ `fluxcal/continuum.py` — B-spline / polynomial / running-median with iterative σ-clipping; model-continuum passthrough |
+| Template matching | ✓ `fluxcal/matching.py` — `select_best_template`, FFT cross-correlation RV (log-λ), χ² / Huber scoring |
 | Calibration vector computation | **None** — `fluxcal/calibration.py` planned (P2) |
 
 ---
@@ -167,9 +167,9 @@ src/kspecdr/
 │   ├── containers.py                 # ✓ implemented (P0) — dataclass definitions (§5)
 │   ├── photometry.py                 # ✓ implemented (P0) — AB mag utils, filter loading, synthetic phot (§6)
 │   ├── masks.py                      # ✓ implemented (P0) — telluric/bad-region mask I/O (§11)
-│   ├── templates.py                  # planned (P1) — TemplateLibrary (BOSZ 2024), resolution matching (§7)
-│   ├── continuum.py                  # planned (P1) — continuum normalization utilities (§8)
-│   ├── matching.py                   # planned (P1) — template selection, RV handling (§9)
+│   ├── templates.py                  # ✓ implemented (P1) — TemplateLibrary, prepare_template (§7)
+│   ├── continuum.py                  # ✓ implemented (P1) — normalize_continuum, fit_continuum (§8)
+│   ├── matching.py                   # ✓ implemented (P1) — select_best_template, cross_correlate_rv (§9)
 │   └── calibration.py                # planned (P2) — per-star cal vector, combination, application (§10)
 │
 ├── data/
@@ -363,7 +363,7 @@ def query_photometry(ra, dec, radius_arcsec=2.0, catalog="refcat2"):
 
 ---
 
-## 7. Stellar Template Handling (`fluxcal/templates.py`)
+## 7. Stellar Template Handling (`fluxcal/templates.py`) ✓ implemented
 
 ### TemplateLibrary class
 
@@ -407,31 +407,30 @@ class TemplateLibrary:
 
 ### BOSZ file format
 
-Each `*.txt.gz` file is whitespace-separated ASCII with **no header**. The
-columns are:
+Each ``_resam.txt.gz`` file is whitespace-separated ASCII with **no header**
+and **2 columns** (150,000 rows).  The wavelength grid is shared and stored
+separately in ``bosz2024_wave_r10000.txt``.
 
 | Col | Content | Unit |
 |---|---|---|
-| 1 | Wavelength | Å |
-| 2 | Normalized flux (F/C) | dimensionless |
-| 3 | Flux density (H) | erg/s/cm²/Å/steradian |
-| 4 | Continuum (C) | erg/s/cm²/Å/steradian |
+| 0 | H (Eddington flux) | erg/s/cm²/Å/steradian |
+| 1 | C (continuum) | erg/s/cm²/Å/steradian |
 
-Use columns 1, 3, and 4 (wavelength, flux, continuum). Convert H → F via
-`F = 4π × H` to get surface flux in erg/s/cm²/Å.
+Convert to surface flux: ``F = 4π × H``.  Normalised flux: ``H / C``.
 
-The shared wavelength grid is in `bosz2024_wave_r10000.txt` (single column, Å).
-Files are read with `numpy.loadtxt` on the decompressed stream:
+The shared wavelength grid has 150,000 points spanning 500–320,000 Å.
+``TemplateLibrary`` trims to the optical range (default 3000–11,000 Å →
+30,163 pixels) on load:
 
 ```python
 import gzip
 import numpy as np
 
+wave = np.loadtxt("bosz2024_wave_r10000.txt")  # shared grid
 with gzip.open(filepath, "rt") as f:
-    data = np.loadtxt(f, usecols=(0, 2, 3))   # wave, H, C
-wave  = data[:, 0]
-flux  = 4 * np.pi * data[:, 1]
-cont  = 4 * np.pi * data[:, 2]
+    data = np.loadtxt(f)   # (150000, 2)
+flux = 4 * np.pi * data[:, 0]   # surface flux
+cont = 4 * np.pi * data[:, 1]   # continuum
 ```
 
 ### BOSZ filename convention
@@ -473,7 +472,7 @@ def resample_spectrum(wave_in, flux_in, wave_out) -> np.ndarray:
 
 ---
 
-## 8. Continuum Normalization (`fluxcal/continuum.py`)
+## 8. Continuum Normalization (`fluxcal/continuum.py`) ✓ implemented
 
 ```python
 def normalize_continuum(spectrum, method="bspline", order=3, n_knots=20,
@@ -515,7 +514,7 @@ def normalize_continuum(spectrum, method="bspline", order=3, n_knots=20,
 
 ---
 
-## 9. Template Selection (`fluxcal/matching.py`)
+## 9. Template Selection (`fluxcal/matching.py`) ✓ implemented
 
 ```python
 def select_best_template(observed, photometry, library,
@@ -709,9 +708,9 @@ No new external dependencies required.
 | Phase | Modules | Status |
 |---|---|---|
 | **P0** | `containers.py`, `photometry.py`, `masks.py` | ✓ **Done** |
-| **P1** | `templates.py` | Next — BOSZ file I/O, TemplateLibrary index, `prepare_template` |
-| **P1** | `continuum.py` | Next — B-spline / polynomial normalization with sigma-clipping |
-| **P1** | `matching.py` | Next — template selection, RV cross-correlation |
+| **P1** | `templates.py` | ✓ **Done** — TemplateLibrary (auto-index, lazy load, wave trim), prepare_template |
+| **P1** | `continuum.py` | ✓ **Done** — B-spline / polynomial / running-median + model-continuum passthrough |
+| **P1** | `matching.py` | ✓ **Done** — select_best_template, FFT cross-correlation RV, χ² / Huber scoring |
 | **P2** | `calibration.py` | Per-star cal vectors, robust combination, application |
 | **P2** | Integration into `reduce_object.py` | Wire fluxcal into pipeline; add `'C'` fiber type |
 | **P3** | QC notebook helpers | Plotting utilities, summary tables (notebook-level) |
