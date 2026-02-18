@@ -23,6 +23,12 @@ Contents
    examples/basic_usage
    examples/wavecal_test
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Planning & Design
+
+   planning/fluxcal_design
+
 Indices and tables
 ==================
 
