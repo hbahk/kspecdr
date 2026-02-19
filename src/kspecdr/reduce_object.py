@@ -11,6 +11,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any
 
+import numpy as np
+
 from .preproc.make_im import make_im
 from .extract.make_ex import make_ex
 from .io.image import ImageFile
@@ -479,7 +481,6 @@ def _flatfield(red_filename: str, args: Dict[str, Any]) -> None:
     The flat must be in pixel space (un-scrunched); flat-fielding happens
     **before** scrunching in the reduction order.
     """
-    import numpy as np
 
     if not args.get('USEFFLAT', True):
         with ImageFile(red_filename, mode='UPDATE') as f:
@@ -564,7 +565,6 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
     Bad throughputs (NaN / outside 0.01–100) are stored as 0.0 in the
     THPUT extension and their spectra are set to zero (2dfdr convention).
     """
-    import numpy as np
     from astropy.io import fits
     from .utils.fiber import get_override_from_args
 
@@ -840,7 +840,6 @@ def _umfspec_ftpc(spec: 'np.ndarray') -> 'np.ndarray':
     throughput estimate.  Values ≤ 0.05 (parked fibers) are set to NaN.
     The returned vector is normalized so that the median of good values is 1.
     """
-    import numpy as np
     nfib = spec.shape[0]
     ftpc = np.full(nfib, np.nan, dtype=np.float64)
     for j in range(nfib):
@@ -866,7 +865,6 @@ def _subtract_continuum(spec: 'np.ndarray', hw: int = 100) -> 'np.ndarray':
     NaN pixels are filled with the global median before filtering, then
     restored.  Mirrors 2dfdr ``SUBTRACT_MED_FILT`` (box = ±100 pixels).
     """
-    import numpy as np
     from scipy.signal import medfilt
     nan_mask = ~np.isfinite(spec)
     tmp = spec.copy()
@@ -885,7 +883,6 @@ def _subtract_continuum(spec: 'np.ndarray', hw: int = 100) -> 'np.ndarray':
 
 def _boxcar1d(spec: 'np.ndarray', width: int = 5) -> 'np.ndarray':
     """Boxcar (top-hat) smoothing of a 1-D spectrum, NaN-aware."""
-    import numpy as np
     from scipy.ndimage import uniform_filter1d
     nan_mask = ~np.isfinite(spec)
     tmp = np.where(nan_mask, 0.0, spec)
@@ -913,7 +910,6 @@ def _get_thput_kgb(
        is the throughput.
     5. Validate 0.01 < B < 100; normalize the whole vector by its median.
     """
-    import numpy as np
     nfib, npix = spec.shape
 
     # Step 1: first-pass estimate

@@ -1,6 +1,6 @@
 # Object (Science) Reduction Planning Document
 
-> **Status**: P0 complete — pipeline runs end-to-end; P1 in progress.
+> **Status**: P0 complete — pipeline runs end-to-end; P1 core (flatfield, throughput, sky, RWSS) implemented; P2+ in progress.
 > **Last updated**: 2026-02-19
 
 ---
@@ -23,14 +23,21 @@ placeholder function in `reduce_object.py` and related gaps in
 | Arc wavelength calibration | `extract/reduce_arc.py` | ~90% |
 | Scrunching (standalone) | `wavecal/scrunch.py` | Done |
 | Fiber flat reduction | `reduce_fflat.py` | ~50% |
+| Object core (flatfield, throughput, sky, RWSS) | `reduce_object.py` | P1 core implemented |
 | Flux calibration | `reduce_object.py:_apply_fluxcal` | Done |
 
 ### What is missing
 
-Every step in `reduce_object()` between `make_ex(args)` and
-`_apply_fluxcal` is a `NotImplementedError` stub. The current
-commissioning workflow (notebook) stops after arc calibration and manual
-scrunching; no object frame has been reduced end-to-end yet.
+The P1 core of `reduce_object()` (flat-fielding, fiber-throughput
+correction, RWSS snapshot, and basic sky subtraction) is now implemented
+in `reduce_object.py`.  Remaining gaps are the P2/P3 features
+(`skylines_recalibration`, `skycalib_test`, `super_skysub`,
+`telcor`, `velcor_update_fibre_table`, `skysubpca`,
+`correct_frame_by_assoc_transfer_function`, `propagate_badthput`,
+`de_wiggle`) which are still no-ops guarded by flags.  The current
+commissioning workflow can now produce wavelength-calibrated,
+flat-fielded, sky-subtracted, flux-calibrated RED files; what remains is
+to add the advanced corrections and diagnostics.
 
 ---
 
