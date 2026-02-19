@@ -28,6 +28,7 @@ Contents
    :caption: Planning & Design
 
    planning/fluxcal_design
+   planning/reduce_object_plan
 
 Indices and tables
 ==================
