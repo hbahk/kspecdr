@@ -406,14 +406,26 @@ class ImageFile:
         header = self.hdul[0].header
         return header.get(keyword, default)
     
-    def set_header_value(self, keyword: str, value: str) -> None:
+    def set_header_value(self, keyword: str, value, comment: str = None) -> None:
         """
         Set a header keyword value.
+
+        Parameters
+        ----------
+        keyword : str
+            Header keyword name
+        value
+            Keyword value
+        comment : str, optional
+            Comment string for the keyword
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
 
-        self.hdul[0].header[keyword] = value
+        if comment is not None:
+            self.hdul[0].header[keyword] = (value, comment)
+        else:
+            self.hdul[0].header[keyword] = value
 
     def read_fiber_types(
         self,
@@ -711,6 +723,47 @@ class ImageFile:
         # Delete keyword from primary HDU
         if keyword in self.hdul[0].header:
             del self.hdul[0].header[keyword]
+
+    def has_hdu(self, name: str) -> bool:
+        """
+        Check whether an HDU with the given EXTNAME exists.
+
+        Parameters
+        ----------
+        name : str
+            HDU extension name (case-insensitive comparison).
+
+        Returns
+        -------
+        bool
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+        name_upper = name.upper()
+        return any(hdu.name.upper() == name_upper for hdu in self.hdul)
+
+    def delete_hdu(self, name: str) -> bool:
+        """
+        Delete an HDU by extension name.
+
+        Parameters
+        ----------
+        name : str
+            HDU extension name to remove.
+
+        Returns
+        -------
+        bool
+            True if the HDU was found and removed, False otherwise.
+        """
+        if self.hdul is None:
+            raise RuntimeError("File not opened")
+        name_upper = name.upper()
+        for idx, hdu in enumerate(self.hdul):
+            if hdu.name.upper() == name_upper and idx > 0:
+                del self.hdul[idx]
+                return True
+        return False
 
     def __enter__(self):
         self.open()  # Uses self.mode from initialization

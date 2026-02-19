@@ -1,6 +1,6 @@
 # Object (Science) Reduction Planning Document
 
-> **Status**: Planning — no implementation started beyond flux calibration.
+> **Status**: P0 complete — pipeline runs end-to-end; P1 in progress.
 > **Last updated**: 2026-02-19
 
 ---
