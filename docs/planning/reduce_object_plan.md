@@ -156,78 +156,176 @@ suitable for commissioning analysis.
 
 #### P1-1. `cmfspec_flatfield` — Fiber flat-field division
 
-- **Effort**: medium (~60 lines)
+- **Effort**: medium (~70 lines)
+- **Called at**: after EX→RED copy, **before** scrunching (pixel space)
 - **Action**:
-  1. Read `FFLAT_FILENAME` from `args`.  If not set, log warning and
-     skip.
-  2. Open the master FFLAT RED file (produced by `reduce_fflat`).
-  3. Read the flat-field data array (NFIB, NPIX).
-  4. Divide the RED file's spectra and variance by the flat-field
-     response.  Handle division by zero / NaN: set to NaN and propagate
-     to the mask.
-  5. Variance propagation: `Var_out = Var_in / flat²` (if flat has
-     negligible variance) or the full expression if flat variance is
-     tracked.
-  6. Update FITS header: `FLATCOR = True`, `FLATFILE = <filename>`,
-     `HISTORY`.
-- **Depends on**: `reduce_fflat` producing a valid master flat. Currently
-  `reduce_fflat` is ~50% complete. Need to verify its output is usable
-  and matches the EX/RED array dimensions.
-- **Open question**: should flat-fielding happen before or after
-  scrunching? The 2dfdr order is flat-field first, then scrunch. This
-  means the flat must be in pixel space (un-scrunched). Verify that
-  `reduce_fflat` produces pixel-space output.
+  1. Check `args.get('USEFFLAT', True)`.  If `False`, write history
+     `'Not divided by fibre flat field'` and return immediately.
+  2. Read `FFLAT_FILENAME` from `args`.  If missing or empty, raise
+     (or log error and return); 2dfdr sets status `DRS__NOFFLAT`.
+  3. Open the FFLAT RED FITS file and read the primary image array
+     `FLTIMG (NPIX, NFIB)` and variance array `FLTVAR (NPIX, NFIB)`.
+  4. Read the science RED primary image `OBJIMG` and variance `OBJVAR`.
+     **Assert** `OBJIMG.shape == FLTIMG.shape`; raise a clear error if
+     dimensions do not match (this is the most common failure mode).
+  5. Check for optional truncation: if `TRUNCFLAT` is `True`, read
+     `USEFLATSTART` (default 1) and `USEFLATEND` (default 2048) and set
+     `FLTIMG[:USEFLATSTART-1, :] = 1.0`, `FLTVAR[:USEFLATSTART-1, :] = 0.0`
+     (likewise for pixels beyond `USEFLATEND`) so those regions are
+     divided by unity (no correction applied outside the trusted range).
+  6. Division (element-wise, handling bad pixels / zeros):
+     ```python
+     good = (FLTIMG != 0) & np.isfinite(FLTIMG) & np.isfinite(OBJIMG)
+     OBJIMG_out = np.where(good, OBJIMG / FLTIMG, np.nan)
+     ```
+  7. Full variance propagation (Taylor expansion, both terms):
+     ```
+     Var_out = (1/flat)^2 * Var_obj + (obj/flat^2)^2 * Var_flat
+     ```
+     Set `OBJVAR_out = np.nan` wherever `OBJIMG_out` is NaN.
+  8. Write updated image and variance back to the RED file.
+  9. Write FITS history: `f'Divided by fibre flat field {FFLAT_FILENAME}'`.
+     If `TRUNCFLAT`, append a second history record noting the pixel
+     range used.
+- **What the FFLAT RED file contains**: `reduce_fflat` produces a
+  pixel-space (un-scrunched) flat where each fiber spectrum is
+  normalized to ≈1.0 (the per-fiber median is used for normalization,
+  then the global averaged flat is removed). Values should be close to
+  1.0 ± a few per cent. No explicit `THPUT` extension is present —
+  that is the job of `cmfspec_ftpcal`.
+- **Confirmed**: flat-fielding happens in **pixel space**, before
+  scrunching. `reduce_fflat` scrunch→average→unscrunch→extrapolate→
+  normalize so the output is always pixel-space. This matches the
+  2dfdr call order in `reduce_object.F95` (line 183, before
+  `SCRUNCH_OBJECT_FRAME` at line 190).
 
 #### P1-2. `cmfspec_ftpcal` — Fiber throughput correction
 
-- **Effort**: medium (~50 lines)
+- **Effort**: medium (~90 lines)
+- **Called at**: after scrunching, **before** sky subtraction; skipped
+  entirely if `TDFIO_NOD_SHUFFLE` returns non-zero (Nod & Shuffle mode)
 - **Action**:
-  1. For each fiber, compute the median flux in a clean spectral region
-     (avoiding ends and sky lines).
-  2. Normalize each fiber by its median so all fibers have comparable
-     flux levels.
-  3. Store per-fiber throughput values in the `FIBRES` table as a
-     `THPUT` column.
-  4. This is distinct from flat-fielding (which corrects the wavelength-
-     dependent response); throughput correction handles the overall
-     efficiency of each fiber.
-- **Why P1**: sky subtraction requires all sky fibers to be on a
-  comparable flux scale. Without throughput correction, the median sky
-  will be biased toward brighter sky fibers.
+  1. Check `args.get('THRUPUT', True)`.  If `False`, write history
+     `'No throughput calibration performed'` and return.
+  2. Check `args.get('USETHPTFILE', False)`.  If `True` and a
+     `THROUGHPUT.fits` file exists in the working directory, read its
+     `THPUT` extension (1-D vector of length NFIB) and use those values
+     directly (skipping all calculation below).
+  3. Otherwise, select the calculation method from
+     `args.get('TPMETH', 'OFFSKY')`:
+     - **`'OFFSKY'`** *(default)*: read `THPUT_FILENAME` from args;
+       open that file and read its `THPUT` extension.  If filename is
+       empty, log a warning `'No throughput map available — continuing'`
+       and return without modifying data.
+     - **`'SKYLINE(KGB)'`**: Karl Glazebrook's sky-line algorithm —
+       (a) call `umfspec_ftpc` (mean-per-fiber, median-normalized) for a
+       first-pass estimate; (b) build a median sky spectrum from sky
+       fibers (`TYPE='S'`) normalized by that estimate; (c) subtract
+       continuum via a ±100-pixel median filter; (d) for each P/S fiber,
+       do a robust linear fit (slope B) of the continuum-subtracted fiber
+       spectrum against the median sky spectrum; (e) `thput = B` if
+       `0.01 < B < 100`, else `NaN`; (f) normalize the whole vector by
+       its median.
+     - **`'SKYFLUX(COR)'`** / **`'SKYFLUX(MED)'`**: sky-line flux
+       integration methods — read `skylines.dat` for line positions,
+       integrate continuum-subtracted flux in ±`2×FWHM`-pixel windows,
+       normalize per line and across lines.  These are more robust when
+       many sky lines are present but require a `skylines.dat` data file.
+     - **Recommendation for KSPEC commissioning**: start with
+       `'SKYLINE(KGB)'` (self-contained, no external file); fall back to
+       `'OFFSKY'` if a dedicated sky frame is available.
+  4. `thput_vec` is a 1-D float array of length NFIB.  Sanity bounds:
+     values outside `(0.01, 100.0)` are set to `NaN`.
+  5. Divide each fiber's spectrum and variance by its throughput:
+     ```python
+     scale = np.where(np.isfinite(thput_vec) & (thput_vec > 0),
+                      1.0 / thput_vec, 0.0)
+     spec[:, i] *= scale[i]
+     var[:, i]  *= scale[i]**2
+     ```
+     (2dfdr sets scale=0 for bad fibers so that their spectra become
+     identically zero, not NaN — this is intentional to prevent sky
+     contamination.)
+  6. Write the throughput vector to a `THPUT` extension in the RED file
+     (1-D BinTable or ImageHDU of length NFIB). Replace any remaining
+     NaN values with 0.0 before writing (per 2dfdr convention).
+  7. Write FITS history noting the method used.
+- **Note**: `THPUT` is written as a file extension, not as a column in
+  the `FIBRES` table. The `FIBRES` table `THPUT` column is a separate
+  (optional) annotation.
 
 #### P1-3. `skysub` — Sky subtraction
 
-- **Effort**: large (~120 lines)
+- **Effort**: large (~100 lines)
+- **Called at**: after throughput correction, before telluric; skipped
+  for Nod & Shuffle data
 - **Action**:
-  1. Identify sky fibers from the `FIBRES` table (`TYPE = 'S'`).
-  2. Reject bad sky fibers (NaN-dominated, outlier flux).
-  3. Compute median (or sigma-clipped mean) sky spectrum from good sky
-     fibers.
-  4. Optionally: iterative sky subtraction (subtract sky, re-estimate
-     residual, subtract again).
-  5. Subtract sky from all fibers (including sky fibers themselves for
-     QC).
-  6. Propagate variance: `Var_out = Var_fiber + Var_sky / N_sky`.
-  7. Store the master sky spectrum as a `SKY` HDU in the RED file for
-     diagnostics.
-  8. Update header: `SKYSUB = True`, `NSKYFIBS = N`, `HISTORY`.
-- **Design choices**:
-  - For the ISOPLANE (14 fibers, ~2 sky), a simple median of sky fibers
-    is appropriate. With more fibers (full KSPEC), consider iterative
-    B-spline sky models.
-  - The 2dfdr order is: throughput → sky sub.  Follow this.
-- **Open question**: with only ~2 sky fibers in ISOPLANE commissioning
-  data, sky subtraction quality will be limited. Document this
-  limitation.
+  1. Check `args.get('SKYSUB', True)`.  If `False`, write history
+     `'No sky subtraction performed'` and return.
+  2. **Identify sky fibers** via `getskyfibres()`:
+     - Read `FIBRES` table `TYPE` column; collect indices where
+       `TYPE == 'S'`.
+     - Fallback if no FIBRES table: read from a `skyfibres.dat` ASCII
+       file (one fiber index per line).
+     - If no sky fibers are identified at all, log a warning
+       `'No sky fibers found'` and skip sky subtraction (do not crash).
+     - (`AUTO_SKYFIBRE_DECLARATION` in 2dfdr handles instrument-specific
+       auto-assignment of sky fibers when the table has none; for KSPEC
+       this path should not be needed if the assign file correctly
+       populates the FIBRES table.)
+  3. **Reject bad sky fibers**: a sky fiber is bad if more than 1/8 of
+     its pixels are `NaN`/bad (the `FCHECK` criterion from 2dfdr).
+     Keep a list of good sky fibers.
+  4. **Combine sky fibers** into a single sky spectrum and sky variance:
+     - Method selected by `args.get('SKYCOMBINE', 'MEAN')`;
+       supported values: `'MEAN'` or `'MEDIAN'`.
+     - For MEAN: `sky = np.nanmean(spectra[:, good_sky_fibs], axis=1)`.
+       Variance: `sky_var = np.nansum(var[:, good_sky_fibs], axis=1) / N_good^2`
+       (error propagation for mean of N independent spectra).
+     - For MEDIAN: use `np.nanmedian`; sky variance estimate should use
+       the `π/2 · MEAN_VAR / N` scaling factor or fall back to the mean
+       variance.
+  5. **Normal sky subtraction** (default, `ITERSKY = False`):
+     ```python
+     for fib in range(NFIB):
+         good = ~(np.isnan(spec[:,fib]) | np.isnan(sky))
+         spec[good, fib] -= sky[good]
+         var[good, fib]  += sky_var[good]
+         spec[~good, fib] = np.nan
+         var[~good, fib]  = np.nan
+     ```
+     The variance addition `Var_fib += Var_sky` is the correct
+     propagation (not `Var_sky / N_sky` — the division by N_sky is
+     already baked into the sky variance from step 4).
+  6. **Iterative sky subtraction** (optional, `ITERSKY = True`): not
+     required for P1; add a `NotImplementedError`-as-warning stub.
+  7. Write sky-subtracted spectra and updated variances back to the
+     RED file's PRIMARY and `VARIANCE` extensions.
+  8. Write the combined sky spectrum to a `SKY` extension (1-D
+     ImageHDU, NPIX elements).  Replace bad pixels with 0.0 before
+     writing (2dfdr uses `CMFSPEC_COPY` for this).
+  9. Write FITS history: `f'Sky subtracted using {N_good} sky fibers'`.
+- **Design notes for ISOPLANE (~2 sky fibers)**:
+  - With only 2 sky fibers, MEAN and MEDIAN produce the same result;
+    use MEAN as the default.
+  - Sky subtraction quality will be limited by small-number statistics
+    and spatial sky gradients across the field; document this.
+  - Consider exposing `SKYCOMBINE` in the commissioning notebook args
+    so it can be toggled easily.
 
 #### P1-4. `make_rwss` — Pre-sky-subtraction snapshot (optional)
 
 - **Effort**: small (~15 lines)
-- **Action**: before sky subtraction, if `INC_RWSS = True`, copy current
-  `PRIMARY` data to a new `RWSS` ImageHDU. This allows comparing
-  before/after sky subtraction.
-- **Why P1**: useful diagnostic for verifying sky subtraction quality,
-  especially during commissioning.
+- **Called at**: after `cmfspec_ftpcal`, immediately before `skysub`
+- **Action**: if `args.get('INC_RWSS', False)`, copy the current
+  PRIMARY image array to a new `RWSS` ImageHDU in the RED file. No
+  header modification needed beyond the extension name.
+- **Why P1**: the RWSS ("Reduced Without Sky Subtraction") HDU lets the
+  commissioning analyst compare pre/post sky-subtraction spectra in the
+  same file.  Also required by the planned `MEASURE_SKY_RESIDUALS`
+  diagnostic (P3).
+- **Note**: `INC_RWSS` defaults to `False` in 2dfdr (`reduce_object.F95`
+  line 211); we should follow this default.
 
 **P1 deliverable**: `reduce_object` produces flat-fielded,
 sky-subtracted, wavelength-calibrated spectra. Combined with the
@@ -367,13 +465,24 @@ consumes.
 to work, the following must be verified:
 
 1. `reduce_fflat` produces a valid master flat RED file with correct
-   array dimensions matching science EX files.
-2. The flat is in pixel space (not scrunched), since flat-fielding
-   happens before scrunching in `reduce_object`.
-3. Fiber types in the flat match those in the science frame.
+   array dimensions matching science EX files (`NPIX × NFIB`).
+2. **The flat is in pixel space (not scrunched)**: `reduce_fflat`
+   scrunch→averages→unscrunch→extrapolate→normalize, so the
+   output RED flat is always in pixel space with values ≈ 1.0.
+   This is confirmed by `SCRUNCH_FLAT_FRAME` in `reduce_fflat.F95`.
+3. Fiber types (`P`, `S`) in the flat FIBRES table must be populated
+   to correctly exclude non-illuminated fibers (`U`, `N`, `G`, etc.)
+   from the averaging step.
+4. `CMFFF_EXTRAP` performs a linear least-squares extrapolation into
+   the first/last 5 pixels of each fiber spectrum to fill edge bad
+   pixels created by scrunching; verify that the Python equivalent
+   does the same (or replaces it with a constant edge-fill).
+5. Optional B-spline post-smoothing (`BSSMOOTH` flag) is available in
+   2dfdr but not required for P1.
 
-**Action**: test `reduce_fflat` on commissioning flat data and verify the
-output before implementing `cmfspec_flatfield`.
+**Action**: test `reduce_fflat` on commissioning flat data, inspect
+the output (values near 1.0, no NaN-dominated fibers), and confirm
+shape matches science EX files before implementing `cmfspec_flatfield`.
 
 ---
 
@@ -387,10 +496,10 @@ Phase 0 (MVP — pipeline runs without crashing)
   └── P0-4  Remaining stubs → no-ops     trivial
 
 Phase 1 (Science-quality core)
-  ├── P1-1  cmfspec_flatfield            medium
-  ├── P1-2  cmfspec_ftpcal               medium
-  ├── P1-3  skysub                       large
-  └── P1-4  make_rwss                    small
+  ├── P1-1  cmfspec_flatfield            medium  (~70 lines; pixel-space division, full Var propagation)
+  ├── P1-2  cmfspec_ftpcal               medium  (~90 lines; OFFSKY default, KGB optional)
+  ├── P1-3  skysub                       large   (~100 lines; MEAN/MEDIAN combine, bad-fib filter)
+  └── P1-4  make_rwss                    small   (~15 lines; copy PRIMARY → RWSS HDU)
 
 Phase 2 (Advanced corrections)
   ├── P2-1  telcor                       medium
@@ -441,25 +550,47 @@ Phase 1 is complete) to catch accidental changes.
 
 ## 8. Open Questions
 
-1. **Flat-field order**: 2dfdr applies flat-fielding before scrunching.
-   Confirm this is correct for KSPEC / Isoplane, or whether scrunching
-   first and then dividing by a scrunched flat is preferable.
+1. **Flat-field order**: confirmed — 2dfdr applies flat-fielding
+   **before** scrunching (`reduce_object.F95` lines 183→190). The
+   FFLAT RED file is in pixel space by design. No change needed.
 
-2. **Sky fibers in ISOPLANE**: with only ~2 sky fibers out of 14, is
-   median sky subtraction sufficient? Should we explore fitting sky
-   models using spatial information?
+2. **Sky fibers in ISOPLANE**: with only ~2 sky fibers out of 14,
+   MEAN and MEDIAN sky combination are equivalent. Simple subtraction
+   is the only practical option; iterative sky subtraction (`ITERSKY`)
+   requires more sky fibers and can be deferred. Document the
+   limitation in the commissioning notebook.
 
-3. **Telluric standard**: is a dedicated telluric standard observed during
-   commissioning, or should we rely on the flux calibration stars
-   (TYPE='C')?
+3. **Throughput method for KSPEC**: `'OFFSKY'` requires a dedicated
+   sky frame with a pre-computed `THPUT` extension. `'SKYLINE(KGB)'`
+   computes throughput from the science frame itself using sky fibers,
+   making it the most self-contained option for commissioning. Decide
+   which method to use based on whether an offset sky frame is
+   available. Note that `SKYFLUX(*)` methods require `skylines.dat`.
 
-4. **Velocity correction source**: do science targets have RA/Dec stored
-   in the `FIBRES` table, or only in the assign file? Need to decide
-   where `velcor_update_fibre_table` reads coordinates from.
+4. **`THPUT` extension vs. `FIBRES` table column**: 2dfdr writes
+   throughputs as a standalone `THPUT` ImageHDU (1-D, NFIB elements),
+   not as a column in `FIBRES`. Our Python implementation should
+   follow this. The `FIBRES.THPUT` column is a separate annotation
+   written by `velcor_update_fibre_table`.
 
-5. **Throughput normalization reference**: should throughput be normalized
-   to the median fiber, the brightest fiber, or unity? 2dfdr uses
-   median.
+5. **Bad sky fiber handling**: `FCHECK` (< 1/8 bad pixels) is defined
+   in `skysub.F95` but is not called in the `SKYSUB` flow visible in
+   the source — bad pixel masking is delegated to `COMBINE_STACK`.
+   In Python, explicitly filter sky fibers with a NaN-fraction check
+   before combining.
+
+6. **Telluric standard**: is a dedicated telluric standard observed
+   during commissioning, or should we rely on flux calibration stars
+   (`TYPE='C'`)?
+
+7. **Velocity correction source**: do science targets have RA/Dec
+   stored in the `FIBRES` table, or only in the assign file? Need to
+   decide where `velcor_update_fibre_table` reads coordinates from.
+
+8. **`TDFIO_WAVE_DELETE`**: 2dfdr deletes the `WAVELA` extension from
+   the RED file after scrunching (line 201 of `reduce_object.F95`).
+   Verify whether `kspecdr` needs to do the same, or whether keeping
+   `WAVELA` for diagnostics is preferable.
 
 ---
 
