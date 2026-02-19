@@ -1,7 +1,7 @@
 # Flux Calibration Design Plan for `kspecdr`
 
-> **Status**: P0 + P1 + P2 implemented — calibration pipeline complete.
-> **Last updated**: 2026-02-18
+> **Status**: P0 + P1 + P2 + P3 implemented — calibration pipeline & QC complete.
+> **Last updated**: 2026-02-19
 
 ---
 
@@ -172,7 +172,8 @@ src/kspecdr/
 │   ├── templates.py                  # ✓ implemented (P1) — TemplateLibrary, prepare_template (§7)
 │   ├── continuum.py                  # ✓ implemented (P1) — normalize_continuum, fit_continuum (§8)
 │   ├── matching.py                   # ✓ implemented (P1) — select_best_template, cross_correlate_rv (§9)
-│   └── calibration.py                # ✓ implemented (P2) — per-star cal vector, combination, application (§10)
+│   ├── calibration.py                # ✓ implemented (P2) — per-star cal vector, combination, application (§10)
+│   └── qc.py                        # ✓ implemented (P3) — QC plotting utilities, text summary
 │
 ├── data/
 │   ├── filters/                      # ✓ populated — filter transmission curves
@@ -716,7 +717,7 @@ No new external dependencies required.
 | **P1** | `matching.py` | ✓ **Done** — select_best_template, FFT cross-correlation RV, χ² / Huber scoring |
 | **P2** | `calibration.py` | ✓ **Done** — scale_template_to_photometry, per-star vectors, weighted-mean/median combination, apply with variance propagation |
 | **P2** | Integration into `reduce_object.py` | ✓ **Done** — `_apply_fluxcal` reads TYPE='C' fibers, catalog, runs full pipeline; `FIBER_TYPE_CALIBRATION` added to constants |
-| **P3** | QC notebook helpers | Plotting utilities, summary tables (notebook-level) |
+| **P3** | QC notebook helpers (`qc.py`) | ✓ **Done** — plot_calibration_summary, plot_per_star_vectors, plot_calibration_residuals, plot_photometric_residuals, plot_template_match, plot_calibrated_spectrum, summarize_calibration |
 
 ---
 

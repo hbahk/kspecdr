@@ -41,6 +41,17 @@ calibration
 Pipeline integration: ``reduce_object.py`` calls ``_apply_fluxcal`` when
 ``CALIBFLUX=True``, reading standard-star fibers (TYPE='C') and catalog.
 
+Implemented (P3)
+----------------
+qc
+    :func:`~.qc.plot_calibration_summary`,
+    :func:`~.qc.plot_per_star_vectors`,
+    :func:`~.qc.plot_calibration_residuals`,
+    :func:`~.qc.plot_photometric_residuals`,
+    :func:`~.qc.plot_template_match`,
+    :func:`~.qc.plot_calibrated_spectrum`,
+    :func:`~.qc.summarize_calibration`
+
 Utilities
 ---------
 download_bosz — Download BOSZ 2024 template subgrid from MAST
@@ -94,6 +105,15 @@ from .templates import (
     prepare_template,
     resample_spectrum,
 )
+from .qc import (
+    plot_calibration_summary,
+    plot_per_star_vectors,
+    plot_calibration_residuals,
+    plot_photometric_residuals,
+    plot_template_match,
+    plot_calibrated_spectrum,
+    summarize_calibration,
+)
 
 __all__ = [
     # containers
@@ -137,4 +157,12 @@ __all__ = [
     "compute_calibration_vector_for_star",
     "combine_calibration_vectors",
     "apply_flux_calibration",
+    # qc
+    "plot_calibration_summary",
+    "plot_per_star_vectors",
+    "plot_calibration_residuals",
+    "plot_photometric_residuals",
+    "plot_template_match",
+    "plot_calibrated_spectrum",
+    "summarize_calibration",
 ]
