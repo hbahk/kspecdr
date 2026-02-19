@@ -466,7 +466,521 @@ def _stamp_pipeline_version(red_filename: str) -> None:
 
 
 # =====================================================================
-# P1+ — Not Yet Implemented (safe no-ops)
+# P1 — Implemented Functions
+# =====================================================================
+
+def _flatfield(red_filename: str, args: Dict[str, Any]) -> None:
+    """Divide by fiber flat-field response (P1-1: cmfspec_flatfield).
+
+    Reads the master FFLAT RED file and divides the science spectra and
+    variance in place.  Implements the full Taylor-expansion variance
+    propagation from 2dfdr ``CMFSPEC_FLATFIELD``.
+
+    The flat must be in pixel space (un-scrunched); flat-fielding happens
+    **before** scrunching in the reduction order.
+    """
+    import numpy as np
+
+    if not args.get('USEFFLAT', True):
+        with ImageFile(red_filename, mode='UPDATE') as f:
+            f.add_history('Not divided by fibre flat field')
+        return
+
+    fflat_fname = args.get('FFLAT_FILENAME')
+    if not fflat_fname or not str(fflat_fname).strip():
+        logger.error("FFLAT_FILENAME not set — skipping flat-field division")
+        return
+
+    truncflat    = args.get('TRUNCFLAT', False)
+    useflatstart = int(args.get('USEFLATSTART', 1))
+    useflatend   = int(args.get('USEFLATEND',   2048))
+
+    with ImageFile(red_filename, mode='UPDATE') as red_f, \
+         ImageFile(fflat_fname,  mode='READ')   as flt_f:
+
+        obj_img = red_f.read_image_data()    # (NFIB, NPIX)
+        obj_var = red_f.read_variance_data()
+        flt_img = flt_f.read_image_data().copy()
+        flt_var = flt_f.read_variance_data().copy()
+
+        if obj_img.shape != flt_img.shape:
+            raise ValueError(
+                f"Flat shape {flt_img.shape} != object shape {obj_img.shape}. "
+                "Flat must be reduced with the same TLM as the science frame."
+            )
+
+        # Apply truncation: pixels outside the trusted range divide by 1.0
+        if truncflat:
+            p0 = useflatstart - 1   # 1-based → 0-based lower bound (inclusive)
+            p1 = useflatend          # 1-based → 0-based upper bound (exclusive)
+            if p0 > 0:
+                flt_img[:, :p0] = 1.0
+                flt_var[:, :p0] = 0.0
+            if p1 < obj_img.shape[1]:
+                flt_img[:, p1:] = 1.0
+                flt_var[:, p1:] = 0.0
+
+        good = (flt_img != 0.0) & np.isfinite(flt_img) & np.isfinite(obj_img)
+
+        # Divide image
+        out_img = np.where(good, obj_img / flt_img, np.nan).astype(np.float32)
+
+        # Full Taylor-expansion variance propagation (2dfdr formula):
+        #   Var_out = (1/flat)^2 * Var_obj + (obj_divided/flat^2)^2 * Var_flat
+        # Note: obj_divided = out_img = obj_img/flat, so second term becomes
+        #       (obj_orig/flat^3)^2 * Var_flat
+        good_var = good & np.isfinite(obj_var) & np.isfinite(flt_var)
+        out_var = np.where(
+            good_var,
+            (1.0 / flt_img) ** 2 * obj_var
+            + (out_img / flt_img ** 2) ** 2 * flt_var,
+            np.nan,
+        ).astype(np.float32)
+
+        red_f.write_image_data(out_img)
+        red_f.write_variance_data(out_var)
+        red_f.add_history(f'Divided by fibre flat field {fflat_fname}')
+        if truncflat:
+            red_f.add_history(
+                f'Flat truncated to pixel range {useflatstart}:{useflatend}'
+            )
+
+    logger.info("Applied flat-field from %s to %s", fflat_fname, red_filename)
+
+
+def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
+    """Per-fiber throughput correction (P1-2: cmfspec_ftpcal).
+
+    Calculates relative fiber throughputs and divides each fiber spectrum
+    (and variance) by its throughput.  Writes a ``THPUT`` ImageHDU (1-D,
+    length NFIB) to the RED file for downstream diagnostics.
+
+    Methods (``TPMETH`` arg, default ``'OFFSKY'``):
+    - ``'OFFSKY'``: read pre-computed throughputs from ``THPUT_FILENAME``
+    - ``'SKYLINE(KGB)'``: Karl Glazebrook's sky-line robust-fit algorithm
+    - ``'MEDIAN'``: simple per-fiber mean, normalized by median
+      (equivalent to 2dfdr ``UMFSPEC_FTPC``)
+
+    Bad throughputs (NaN / outside 0.01–100) are stored as 0.0 in the
+    THPUT extension and their spectra are set to zero (2dfdr convention).
+    """
+    import numpy as np
+    from astropy.io import fits
+    from .utils.fiber import get_override_from_args
+
+    if not args.get('THRUPUT', True):
+        with ImageFile(red_filename, mode='UPDATE') as f:
+            f.add_history('No throughput calibration performed')
+        return
+
+    tpmeth = str(args.get('TPMETH', 'OFFSKY')).upper().strip()
+
+    with ImageFile(red_filename, mode='UPDATE') as red_f:
+        spec = red_f.read_image_data()    # (NFIB, NPIX)
+        var  = red_f.read_variance_data()
+        overrides = get_override_from_args(args)
+        fiber_types, _ = red_f.read_fiber_types(1000, overrides=overrides)
+        nfib = spec.shape[0]
+        fiber_types_arr = np.array(
+            list(fiber_types[:nfib]), dtype='U1'
+        )
+
+        thput_vec = np.full(nfib, np.nan, dtype=np.float64)
+
+        # --- optional external override file ---
+        use_external = args.get('USETHPTFILE', False)
+        loaded_external = False
+        if use_external:
+            import os
+            if os.path.exists('THROUGHPUT.fits'):
+                with fits.open('THROUGHPUT.fits') as hdul:
+                    for hdu in hdul:
+                        if 'THPUT' in hdu.name.upper() and hdu.data is not None:
+                            n = min(len(hdu.data), nfib)
+                            thput_vec[:n] = hdu.data[:n]
+                            loaded_external = True
+                            break
+                if loaded_external:
+                    logger.info("Throughput: loaded from THROUGHPUT.fits")
+                    tpmeth = '_EXTERNAL'
+
+        # --- compute throughputs if not loaded from external file ---
+        if not loaded_external:
+            if tpmeth == 'OFFSKY':
+                thput_fname = str(args.get('THPUT_FILENAME', '')).strip()
+                if not thput_fname:
+                    logger.warning(
+                        "TPMETH=OFFSKY but THPUT_FILENAME not set — "
+                        "skipping throughput calibration"
+                    )
+                    red_f.add_history('No throughput calibration performed')
+                    return
+                with fits.open(thput_fname) as hdul:
+                    thput_hdu = None
+                    for hdu in hdul:
+                        if 'THPUT' in hdu.name.upper() and hdu.data is not None:
+                            thput_hdu = hdu
+                            break
+                    if thput_hdu is None:
+                        logger.warning(
+                            "No THPUT extension found in %s — "
+                            "skipping throughput calibration", thput_fname
+                        )
+                        red_f.add_history('No throughput calibration performed')
+                        return
+                    n = min(len(thput_hdu.data), nfib)
+                    thput_vec[:n] = thput_hdu.data[:n]
+                logger.info("Throughput: loaded from %s (OFFSKY)", thput_fname)
+
+            elif tpmeth == 'SKYLINE(KGB)':
+                thput_vec = _get_thput_kgb(spec, fiber_types_arr)
+                logger.info("Throughput: KGB sky-line algorithm")
+
+            elif tpmeth in ('MEDIAN', 'UMFSPEC'):
+                thput_vec = _umfspec_ftpc(spec)
+                logger.info("Throughput: per-fiber median (UMFSPEC)")
+
+            else:
+                logger.warning(
+                    "Unknown TPMETH '%s' — skipping throughput calibration", tpmeth
+                )
+                red_f.add_history('No throughput calibration performed')
+                return
+
+        # --- sanity check ---
+        bad = ~np.isfinite(thput_vec) | (thput_vec < 0.01) | (thput_vec > 100.0)
+        thput_vec[bad] = np.nan
+        n_bad = int(np.sum(bad))
+        if n_bad:
+            logger.warning("Throughput: %d fibers have bad/out-of-range values", n_bad)
+
+        # --- divide spectra by throughput ---
+        for i in range(nfib):
+            if np.isfinite(thput_vec[i]) and thput_vec[i] > 0:
+                scale = 1.0 / thput_vec[i]
+            else:
+                scale = 0.0    # 2dfdr: bad throughput → zero spectrum
+            spec[i] = np.where(np.isfinite(spec[i]), spec[i] * scale, np.nan)
+            var[i]  = np.where(np.isfinite(var[i]),  var[i]  * scale**2, np.nan)
+
+        red_f.write_image_data(spec.astype(np.float32))
+        red_f.write_variance_data(var.astype(np.float32))
+
+        # Write THPUT extension (bad → 0.0 per 2dfdr convention)
+        thput_out = np.where(np.isfinite(thput_vec), thput_vec, 0.0).astype(np.float32)
+        _write_image_hdu(red_f, 'THPUT', thput_out)
+
+        hist_map = {
+            '_EXTERNAL':    'Throughput calibration using THROUGHPUT.fits',
+            'OFFSKY':       f'Throughput calibration using OFFSKY from '
+                            f'{args.get("THPUT_FILENAME", "")}',
+            'MEDIAN':       'Throughput calibration using per-fiber median (UMFSPEC)',
+            'UMFSPEC':      'Throughput calibration using per-fiber median (UMFSPEC)',
+            'SKYLINE(KGB)': 'Throughput calibration using sky lines (KGB method)',
+        }
+        red_f.add_history(hist_map.get(tpmeth, f'Throughput calibration ({tpmeth})'))
+
+    logger.info("Throughput calibrated %s (method=%s)", red_filename, tpmeth)
+
+
+def _make_rwss(red_filename: str) -> None:
+    """Copy spectra to RWSS HDU before sky subtraction (P1-4).
+
+    Saves a snapshot of the current (throughput-corrected, pre-sky) spectra
+    so the before/after sky subtraction comparison is available in the same
+    RED file.  Only executed when ``INC_RWSS=True`` (default: False).
+    """
+    with ImageFile(red_filename, mode='UPDATE') as f:
+        data = f.read_image_data()    # (NFIB, NPIX)
+        _write_image_hdu(f, 'RWSS', data.astype('float32'))
+    logger.info("Saved RWSS (pre-sky) snapshot in %s", red_filename)
+
+
+def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
+    """Sky subtraction using sky fibers (P1-3: SKYSUB).
+
+    Identifies sky fibers (``TYPE='S'`` in the FIBRES table), rejects those
+    with more than 1/8 bad pixels, combines them into a master sky spectrum,
+    and subtracts it from all fibers.  The combined sky is written to a
+    ``SKY`` ImageHDU.
+
+    Combination method is controlled by ``SKYCOMBINE`` arg (``'MEAN'`` or
+    ``'MEDIAN'``, default ``'MEAN'``).
+
+    Variance propagation: ``Var_out = Var_fib + Var_sky`` where ``Var_sky``
+    already accounts for the combination of N_sky fibers.
+    """
+    import numpy as np
+    from pathlib import Path
+    from .utils.fiber import get_override_from_args
+
+    if not args.get('SKYSUB', True):
+        with ImageFile(red_filename, mode='UPDATE') as f:
+            f.add_history('No sky subtraction performed')
+        return
+
+    combine_method = str(args.get('SKYCOMBINE', 'MEAN')).upper().strip()
+    if combine_method not in ('MEAN', 'MEDIAN'):
+        logger.warning(
+            "Unknown SKYCOMBINE '%s' — defaulting to MEAN", combine_method
+        )
+        combine_method = 'MEAN'
+
+    with ImageFile(red_filename, mode='UPDATE') as red_f:
+        spec = red_f.read_image_data()    # (NFIB, NPIX)
+        var  = red_f.read_variance_data()
+        overrides = get_override_from_args(args)
+        fiber_types, _ = red_f.read_fiber_types(1000, overrides=overrides)
+        nfib = spec.shape[0]
+
+        # Identify sky fibers from the FIBRES table
+        sky_fibs = [
+            i for i in range(nfib)
+            if i < len(fiber_types) and fiber_types[i] == 'S'
+        ]
+
+        # Fallback: read from skyfibres.dat if no FIBRES table
+        if not sky_fibs and not red_f.has_fiber_table():
+            dat = Path('skyfibres.dat')
+            if dat.exists():
+                lines = dat.read_text().splitlines()
+                sky_fibs = [
+                    int(line.strip()) - 1   # 1-based → 0-based
+                    for line in lines
+                    if line.strip().isdigit()
+                ]
+                logger.info(
+                    "Sky fibers: loaded %d from skyfibres.dat", len(sky_fibs)
+                )
+
+        if not sky_fibs:
+            logger.warning(
+                "No sky fibers found — skipping sky subtraction"
+            )
+            red_f.add_history('No sky subtraction: no sky fibers found')
+            return
+
+        # FCHECK: reject fibers with > 1/8 bad pixels (2dfdr criterion)
+        good_sky = [
+            i for i in sky_fibs
+            if np.sum(~np.isfinite(spec[i])) < spec.shape[1] / 8
+        ]
+        if not good_sky:
+            logger.warning(
+                "All %d sky fibers have too many bad pixels — "
+                "skipping sky subtraction", len(sky_fibs)
+            )
+            red_f.add_history(
+                'No sky subtraction: all sky fibers have too many bad pixels'
+            )
+            return
+
+        logger.info(
+            "Sky subtraction: %d/%d sky fibers pass quality check (%s)",
+            len(good_sky), len(sky_fibs), combine_method,
+        )
+
+        # Combine sky fibers into a single sky spectrum and sky variance
+        sky_stack = spec[good_sky, :]    # (N_sky, NPIX)
+        var_stack  = var[good_sky, :]
+        n_sky = len(good_sky)
+
+        if combine_method == 'MEDIAN':
+            sky_spec = np.nanmedian(sky_stack, axis=0)
+            # Variance of median ≈ (π/2) * mean_var / N
+            sky_var  = (np.pi / 2.0) * np.nanmean(var_stack, axis=0) / n_sky
+        else:  # MEAN
+            sky_spec = np.nanmean(sky_stack, axis=0)
+            # Error propagation for mean of N independent measurements
+            sky_var  = np.nansum(var_stack, axis=0) / n_sky ** 2
+
+        # Subtract sky from every fiber and propagate variance
+        for fib in range(nfib):
+            bad = ~np.isfinite(spec[fib]) | ~np.isfinite(sky_spec)
+            spec[fib, ~bad] -= sky_spec[~bad]
+            var[fib, ~bad]  += sky_var[~bad]
+            spec[fib, bad]   = np.nan
+            var[fib, bad]    = np.nan
+
+        red_f.write_image_data(spec.astype(np.float32))
+        red_f.write_variance_data(var.astype(np.float32))
+
+        # Write combined sky to SKY extension (bad pixels → 0.0)
+        sky_out = np.where(np.isfinite(sky_spec), sky_spec, 0.0).astype(np.float32)
+        _write_image_hdu(red_f, 'SKY', sky_out)
+
+        red_f.add_history(
+            f'Sky subtracted using {n_sky} sky fibers ({combine_method})'
+        )
+
+    logger.info(
+        "Sky subtracted %s using %d fibers", red_filename, len(good_sky)
+    )
+
+
+# =====================================================================
+# P1 — Private Helpers
+# =====================================================================
+
+def _write_image_hdu(f: ImageFile, name: str, data: 'np.ndarray') -> None:
+    """Add or overwrite a named ImageHDU inside an open ImageFile context."""
+    from astropy.io import fits
+    name_upper = name.upper()
+    for idx, hdu in enumerate(f.hdul):
+        if hdu.name.upper() == name_upper and idx > 0:
+            hdu.data = data
+            return
+    f.hdul.append(fits.ImageHDU(data=data, name=name_upper))
+
+
+def _umfspec_ftpc(spec: 'np.ndarray') -> 'np.ndarray':
+    """Per-fiber mean normalized by the global median (UMFSPEC_FTPC).
+
+    This is the 2dfdr ``UMFSPEC_FTPC`` algorithm used as a first-pass
+    throughput estimate.  Values ≤ 0.05 (parked fibers) are set to NaN.
+    The returned vector is normalized so that the median of good values is 1.
+    """
+    import numpy as np
+    nfib = spec.shape[0]
+    ftpc = np.full(nfib, np.nan, dtype=np.float64)
+    for j in range(nfib):
+        row  = spec[j]
+        good = np.isfinite(row) & (row == row)
+        if np.sum(good) == 0:
+            continue
+        mean_val = float(np.mean(row[good]))
+        if mean_val <= 0.05:    # parked / unused fiber
+            continue
+        ftpc[j] = mean_val
+    valid = np.isfinite(ftpc)
+    if np.sum(valid) > 0:
+        med = float(np.median(ftpc[valid]))
+        if med > 0:
+            ftpc[valid] /= med
+    return ftpc
+
+
+def _subtract_continuum(spec: 'np.ndarray', hw: int = 100) -> 'np.ndarray':
+    """Subtract a local median continuum (running window ±hw pixels).
+
+    NaN pixels are filled with the global median before filtering, then
+    restored.  Mirrors 2dfdr ``SUBTRACT_MED_FILT`` (box = ±100 pixels).
+    """
+    import numpy as np
+    from scipy.signal import medfilt
+    nan_mask = ~np.isfinite(spec)
+    tmp = spec.copy()
+    if nan_mask.any():
+        fill = float(np.nanmedian(spec)) if np.any(~nan_mask) else 0.0
+        tmp[nan_mask] = fill
+    ksize = 2 * hw + 1
+    # kernel must be odd and ≤ spectrum length
+    if ksize > len(tmp):
+        ksize = len(tmp) if len(tmp) % 2 == 1 else max(1, len(tmp) - 1)
+    continuum = medfilt(tmp, ksize)
+    result = spec - continuum
+    result[nan_mask] = np.nan
+    return result
+
+
+def _boxcar1d(spec: 'np.ndarray', width: int = 5) -> 'np.ndarray':
+    """Boxcar (top-hat) smoothing of a 1-D spectrum, NaN-aware."""
+    import numpy as np
+    from scipy.ndimage import uniform_filter1d
+    nan_mask = ~np.isfinite(spec)
+    tmp = np.where(nan_mask, 0.0, spec)
+    cnt = np.where(nan_mask, 0.0, 1.0)
+    sm_sum = uniform_filter1d(tmp, size=width, mode='nearest') * width
+    sm_cnt = uniform_filter1d(cnt, size=width, mode='nearest') * width
+    result = np.where(sm_cnt > 0, sm_sum / sm_cnt, np.nan)
+    result[nan_mask] = np.nan
+    return result
+
+
+def _get_thput_kgb(
+    spec: 'np.ndarray', fiber_types: 'np.ndarray'
+) -> 'np.ndarray':
+    """Karl Glazebrook's sky-line throughput algorithm (SKYLINE(KGB)).
+
+    Algorithm (mirrors 2dfdr ``GET_THPUT_KGB``):
+    1. First-pass throughput estimate via ``_umfspec_ftpc``.
+    2. Build a median sky spectrum from sky fibers, each normalized by the
+       first-pass estimate.
+    3. Subtract continuum (±100-px running median) from the sky and each
+       fiber spectrum, then apply a 5-pixel boxcar smooth.
+    4. For each P/S fiber, fit a robust line (Siegel slope) of the
+       continuum-subtracted fiber spectrum vs. the median sky.  The slope B
+       is the throughput.
+    5. Validate 0.01 < B < 100; normalize the whole vector by its median.
+    """
+    import numpy as np
+    nfib, npix = spec.shape
+
+    # Step 1: first-pass estimate
+    thput_init = _umfspec_ftpc(spec)
+
+    # Step 2: identify sky fibers and build median sky
+    sky_fibs = [
+        i for i in range(nfib)
+        if i < len(fiber_types) and fiber_types[i] == 'S'
+    ]
+    if not sky_fibs:
+        logger.warning(
+            "KGB throughput: no sky fibers — falling back to MEDIAN"
+        )
+        return thput_init
+
+    sky_rows = []
+    for sf in sky_fibs:
+        tp = float(thput_init[sf]) if np.isfinite(thput_init[sf]) and thput_init[sf] > 0 else 1.0
+        sky_rows.append(spec[sf] / tp)
+    sky_med = np.nanmedian(np.array(sky_rows), axis=0)  # (NPIX,)
+
+    # Step 3: continuum-subtract and smooth the median sky
+    sky_cs = _subtract_continuum(sky_med, hw=100)
+    sky_sm = _boxcar1d(sky_cs, width=5)
+
+    # Step 4: fit each P/S fiber
+    thput_out = np.full(nfib, np.nan, dtype=np.float64)
+    for i in range(nfib):
+        ft = fiber_types[i] if i < len(fiber_types) else 'N'
+        if ft not in ('P', 'S'):
+            continue
+        fib_cs = _subtract_continuum(spec[i].copy(), hw=100)
+        fib_sm = _boxcar1d(fib_cs, width=5)
+        ok = np.isfinite(fib_sm) & np.isfinite(sky_sm)
+        if np.sum(ok) < 20:
+            logger.debug(
+                "KGB: fiber %d has only %d good pixels — skipping", i, int(np.sum(ok))
+            )
+            continue
+        x = sky_sm[ok]
+        y = fib_sm[ok]
+        try:
+            from scipy.stats import siegelslopes
+            B = float(siegelslopes(y, x).slope)
+        except Exception:
+            # Fallback: OLS slope (no intercept) through origin
+            denom = float(np.dot(x, x))
+            B = float(np.dot(x, y) / denom) if denom != 0 else 0.0
+        if 0.01 < B < 100.0:
+            thput_out[i] = B
+
+    # Step 5: normalize by median
+    valid = np.isfinite(thput_out)
+    if np.sum(valid) > 0:
+        med = float(np.median(thput_out[valid]))
+        if med > 0:
+            normed = thput_out[valid] / med
+            thput_out[valid] = np.where(
+                (normed > 0.01) & (normed < 100.0), normed, np.nan
+            )
+
+    return thput_out
+
+
+# =====================================================================
+# P2+ — Not Yet Implemented (safe no-ops)
 # =====================================================================
 
 def _clean_im(args: Dict[str, Any]) -> None:
@@ -482,33 +996,6 @@ def _skylines_recalibration(filename: str, args: Dict[str, Any]) -> None:
 def _skycalib_test(filename: str, args: Dict[str, Any]) -> None:
     """QC test for skyline wavelength calibration (not yet implemented)."""
     logger.warning("Skyline calibration test not yet implemented — skipping")
-
-
-def _flatfield(red_filename: str, args: Dict[str, Any]) -> None:
-    """Divide by fiber flat-field response (not yet implemented)."""
-    fflat_fname = args.get('FFLAT_FILENAME')
-    if not fflat_fname:
-        logger.info("No FFLAT_FILENAME provided — skipping flat-field division")
-        return
-    logger.warning(
-        "Fiber flat-field division not yet implemented — skipping "
-        "(FFLAT_FILENAME=%s)", fflat_fname
-    )
-
-
-def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
-    """Per-fiber throughput correction (not yet implemented)."""
-    logger.warning("Fiber throughput calibration not yet implemented — skipping")
-
-
-def _make_rwss(red_filename: str) -> None:
-    """Copy spectra to RWSS HDU before sky subtraction (not yet implemented)."""
-    logger.warning("RWSS snapshot not yet implemented — skipping")
-
-
-def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
-    """Median sky subtraction from sky fibers (not yet implemented)."""
-    logger.warning("Sky subtraction not yet implemented — skipping")
 
 
 def _super_skysub(red_filename: str, ex_filename: str, args: Dict[str, Any]) -> None:
