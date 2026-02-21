@@ -252,12 +252,16 @@ def match_fibers_isoplane(
     """
     Simple 1-to-1 fiber matching for ISOPLANE.
 
+    Traces are assumed ordered by increasing y (trace 1 = lowest y). Fiber
+    table row 1 corresponds to highest y, so mapping is reversed: fiber 0
+    is assigned the last (highest-y) trace, fiber 1 the second-to-last, etc.
+
     Parameters
     ----------
     nf : int
         Number of fibers
     pk_posn : np.ndarray
-        Detected peak positions
+        Detected peak positions (ordered by increasing y)
 
     Returns
     -------
@@ -270,12 +274,13 @@ def match_fibers_isoplane(
 
     npks = len(pk_posn)
 
-    # Assume traces correspond to fibers 1..min(NF, NPKS)
-    # Or 0..min-1
+    # Assume traces are ordered by increasing y (trace 1 = lowest y).
+    # Fiber table is 1..nf with 1 = highest y. Reverse so fiber 0 -> last trace.
     count = min(nf, npks)
 
     for i in range(count):
-        match_vector[i] = i + 1 # 1-based trace index
-        modelled_posn[i] = pk_posn[i]
+        trace_idx = count - 1 - i  # reverse: fiber 0 -> trace with highest y
+        match_vector[i] = trace_idx + 1  # 1-based trace index
+        modelled_posn[i] = pk_posn[trace_idx]
 
     return match_vector, modelled_posn
