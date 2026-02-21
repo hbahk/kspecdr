@@ -10,13 +10,11 @@ Provides:
 BOSZ file format (``_resam.txt.gz``)
 ------------------------------------
 Two-column ASCII (whitespace-separated, no header), one row per wavelength
-point.  The shared wavelength grid is in a separate file
+point. The shared wavelength grid is in a separate file
 (``bosz2024_wave_r10000.txt``).
 
-| Col | Content  | Unit                       |
-|-----|----------|----------------------------|
-|   0 | H        | erg/s/cm²/Å/steradian      |
-|   1 | C (cont) | erg/s/cm²/Å/steradian      |
+- Column 0: ``H`` (erg/s/cm²/Å/steradian)
+- Column 1: ``C`` (continuum; erg/s/cm²/Å/steradian)
 
 Surface flux: ``F = 4π × H``.  Normalised flux: ``F/C = H/C``.
 """

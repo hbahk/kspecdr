@@ -1,4 +1,4 @@
-# Package Overview
+# Package Architecture
 
 `kspecdr` is a Python-based data reduction pipeline for K-SPEC, designed to be modular and extensible. It separates instrument definitions, file I/O, core algorithms, and orchestration logic.
 
@@ -71,40 +71,12 @@ data/
 └── images/           # Images and logos used in the documentation.
 ```
 
-## API Reference
+## Related Reference Pages
 
-### Preprocessing
+Detailed API docs are organized under [API Reference](../reference/index.md):
 
-```{eval-rst}
-.. automodule:: kspecdr.preproc.make_im
-   :members:
-
-.. automodule:: kspecdr.preproc.preproc
-   :members:
-```
-
-### Tramline Map
-
-```{eval-rst}
-.. automodule:: kspecdr.tlm.make_tlm
-   :members:
-```
-
-### Extraction & Reduction
-
-```{eval-rst}
-.. automodule:: kspecdr.extract.make_ex
-   :members:
-
-.. automodule:: kspecdr.extract.make_red
-   :members:
-```
-
-### Wavelength Calibration
-
-The high-level orchestration for arc reduction is located in `kspecdr.extract`, while the core calibration logic resides in `kspecdr.wavecal`.
-
-```{eval-rst}
-.. automodule:: kspecdr.extract.reduce_arc
-   :members:
-```
+- [Preprocessing](../reference/preprocessing.md)
+- [Tramline](../reference/tramline.md)
+- [Extraction](../reference/extraction.md)
+- [Wavelength Calibration](../reference/wavelength-calibration.md)
+- [Flux Calibration](../reference/flux-calibration.md)

@@ -11,15 +11,15 @@ From the repository root::
 
 Subgrid definition (F-type spectrophotometric standards)
 ---------------------------------------------------------
-  Resolution : R = 10,000
-  Teff       : 5000–8000 K, step 250 K  (13 values)
-  log(g)     : 3.5, 4.0, 4.5, 5.0
-  [M/H]      : −1.00 to +0.50, step 0.25  (7 values)
-  [α/M]      : +0.00 (all [M/H]);  additionally +0.25 for [M/H] ≤ −0.50
-  [C/M]      : +0.00
-  vmicro     : 1 km/s
-  atmos      : mp (MARCS plane-parallel)  for Teff 5000–7250 K
-               ap (ATLAS9 plane-parallel) for Teff 7500–8000 K
+- Resolution: R = 10,000
+- Teff: 5000-8000 K, step 250 K (13 values)
+- log(g): 3.5, 4.0, 4.5, 5.0
+- [M/H]: -1.00 to +0.50, step 0.25 (7 values)
+- [alpha/M]: +0.00 (all [M/H]); additionally +0.25 for [M/H] <= -0.50
+- [C/M]: +0.00
+- vmicro: 1 km/s
+- atmos: mp (MARCS plane-parallel) for Teff 5000-7250 K,
+  ap (ATLAS9 plane-parallel) for Teff 7500-8000 K
 
 Output
 ------
@@ -33,8 +33,8 @@ The shared wavelength grid is saved to::
 
 References
 ----------
-Mészáros et al. 2024 — The updated BOSZ synthetic stellar spectral library
-MAST HLSP BOSZ: https://archive.stsci.edu/hlsp/bosz
+- Meszaros et al. 2024: The updated BOSZ synthetic stellar spectral library
+- MAST HLSP BOSZ: https://archive.stsci.edu/hlsp/bosz
 """
 
 from __future__ import annotations

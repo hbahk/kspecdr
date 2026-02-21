@@ -2,33 +2,46 @@
 Welcome to kspecdr's documentation!
 ===================================
 
-`kspecdr` is a Python-based reduction pipeline for the K-SPEC instrument, inspired by and migrating from the 2dFDR software.
+`kspecdr` is a Python-based reduction pipeline for the K-SPEC instrument, inspired by and migrating from 2dFDR.
 
 .. note::
-   This project is currently in **Alpha** stage. Many advanced reduction features (like Optimal Extraction, Sky Subtraction, and Flux Calibration) are work-in-progress.
-
-Contents
---------
+   The project is currently in **alpha**. Core preprocessing, tramline generation, SUM extraction, and arc wavelength calibration are available, while full science reduction is still under active development.
 
 .. toctree::
    :maxdepth: 2
-   :caption: User Guide
+   :caption: Getting Started
 
-   installation
-   quickstart
-   package_overview
-   reduction_steps
-   isoplane_reduction_workflow
-   isoplane_reduction_theory
-   examples/basic_usage
-   examples/wavecal_test
+   getting-started/index
 
 .. toctree::
    :maxdepth: 2
-   :caption: Planning & Design
+   :caption: Tutorials
 
-   planning/fluxcal_design
-   planning/reduce_object_plan
+   tutorials/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: How-to Guides
+
+   how-to/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Explanations
+
+   explanations/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   reference/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Development
+
+   development/index
 
 Indices and tables
 ==================

@@ -512,13 +512,10 @@ def compute_resolution_stats(
 
     Returns
     -------
-    dict with keys:
-        sigma_pix_median : median sigma in pixels (all good lines)
-        fwhm_angstrom_median : median FWHM in Angstrom
-        resolving_power_median : median R = lambda / FWHM
-        fwhm_poly_coeffs : polynomial coefficients for FWHM(lambda) fit
-        per_line : dict of per-line arrays (wavelength, pixel, sigma_pix,
-                   fwhm_angstrom, resolving_power) for diagnostics
+    dict
+        Dictionary with keys:
+        ``sigma_pix_median``, ``fwhm_angstrom_median``,
+        ``resolving_power_median``, ``fwhm_poly_coeffs``, and ``per_line``.
     """
     good = ~outliers
     x_good = x_pts[good]

@@ -3,7 +3,7 @@ Photometric utilities for kspecdr flux calibration.
 
 Provides:
 - AB magnitude ↔ flux density conversions
-- Filter curve loading (data/filters/*.dat)
+- Filter curve loading (``data/filters/*.dat``)
 - Synthetic photometry through a bandpass
 - ATLAS Refcat2 catalog loading and extraction into :class:`Photometry`
 

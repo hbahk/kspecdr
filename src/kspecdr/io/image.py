@@ -4,7 +4,7 @@ Astropy-based I/O utilities for tramline map processing.
 This module provides a simple interface for reading image data, header keywords,
 and other metadata from FITS files, replacing the Fortran TDFIO functions.
 
-Usage example:
+Usage example::
 
     from kspecdr.io.image import ImageFile
     with ImageFile('myfile.fits') as im_file:

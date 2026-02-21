@@ -2,7 +2,7 @@
 
 This document explains what is considered at each reduction stage, why each step exists, and what mathematical model is used in the current `kspecdr` implementation for Isoplane data.
 
-It complements the procedure-oriented guide in `isoplane_reduction_workflow.md`.
+It complements the procedure-oriented guide in [Isoplane Data Reduction Workflow](../tutorials/isoplane-end-to-end.md).
 
 ## 1. End-to-End View
 

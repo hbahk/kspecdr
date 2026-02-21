@@ -25,13 +25,8 @@ def get_isoplane_readout_settings(header: fits.Header) -> dict:
     Returns
     -------
     dict
-        {
-            "gain": float,
-            "noise": float,
-            "speed_hz": float or None,
-            "gain_mode": str or None,
-            "noise_mode": str or None,
-        }
+        Mapping with keys ``gain``, ``noise``, ``speed_mhz``,
+        ``gain_mode``, and ``noise_mode``.
     """
     readout_modes = {
         "LOW": {

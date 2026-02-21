@@ -29,7 +29,7 @@ def multi_target_tracking(
     This is designed to be close in spirit to the Fortran MULTI_TARGET_TRACKING:
       - Unique assignment (1:1) between existing tracks and current-step points.
       - Cost uses Euclidean distance in (x, seq) space:
-            cost = sqrt( (dx)^2 + (gap)^2 )
+            cost = sqrt(dx^2 + gap^2)
       - Proximity gating:
             abs(dx) <= max_displacement
             gap <= gap_limit  (default: nsteps//4, like Fortran's NSEQ/4)
@@ -46,7 +46,8 @@ def multi_target_tracking(
     max_ntraces : int
         Maximum number of traces to track/return.
     max_displacement : float
-        Maximum allowed |dx| for candidate associations (Fortran MAX_DIST).
+        Maximum allowed displacement in x for candidate associations
+        (Fortran MAX_DIST).
     min_fraction : float, optional
         Keep only traces with assigned points > min_fraction * nsteps.
         (Matches PK_GRID2TRACES default behavior when min_fraction=0.5.)
