@@ -696,16 +696,19 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
 
 
 def _make_rwss(red_filename: str) -> None:
-    """Copy spectra to RWSS HDU before sky subtraction (P1-4).
+    """Copy spectra and variance to RWSS/RWSSVAR HDUs before sky subtraction (P1-4).
 
     Saves a snapshot of the current (throughput-corrected, pre-sky) spectra
-    so the before/after sky subtraction comparison is available in the same
-    RED file.  Only executed when ``INC_RWSS=True`` (default: False).
+    and their variance so the before/after sky subtraction comparison is
+    available in the same RED file.  Only executed when ``INC_RWSS=True``
+    (default: False).
     """
     with ImageFile(red_filename, mode='UPDATE') as f:
         data = f.read_image_data()    # (NFIB, NPIX)
+        var = f.read_variance_data()  # same shape
         _write_image_hdu(f, 'RWSS', data.astype('float32'))
-    logger.info("Saved RWSS (pre-sky) snapshot in %s", red_filename)
+        _write_image_hdu(f, 'RWSSVAR', var.astype('float32'))
+    logger.info("Saved RWSS (pre-sky) snapshot and variance in %s", red_filename)
 
 
 def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
