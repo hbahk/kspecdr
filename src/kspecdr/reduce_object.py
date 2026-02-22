@@ -716,8 +716,8 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
 
     Identifies sky fibers (``TYPE='S'`` in the FIBRES table), rejects those
     with more than 1/8 bad pixels, combines them into a master sky spectrum,
-    and subtracts it from all fibers.  The combined sky is written to a
-    ``SKY`` ImageHDU.
+    and subtracts it from all fibers.  The combined sky and its variance are
+    written to ``SKY`` and ``SKYVAR`` ImageHDUs.
 
     Combination method is controlled by ``SKYCOMBINE`` arg:
 
@@ -837,6 +837,11 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
         # Write combined sky to SKY extension (bad pixels → 0.0)
         sky_out = np.where(np.isfinite(sky_spec), sky_spec, 0.0).astype(np.float32)
         _write_image_hdu(red_f, 'SKY', sky_out)
+        # Write combined sky variance to SKYVAR (bad pixels → NaN)
+        sky_var_out = np.where(np.isfinite(sky_spec), sky_var, np.nan).astype(
+            np.float32
+        )
+        _write_image_hdu(red_f, 'SKYVAR', sky_var_out)
 
         red_f.add_history(
             f'Sky subtracted using {n_sky} sky fibers ({combine_method})'
