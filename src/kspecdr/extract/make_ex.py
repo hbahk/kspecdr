@@ -200,7 +200,7 @@ def make_ex_from_im(
     if operat in ["TRAM", "SUM", "NEWTRAM"]:
         # Simple Summing Extraction
         # Get width from args or use default
-        width = float(args.get("SUM_WIDTH", 5.0))  # Default from SUMEXTR
+        width = float(args.get("SUM_WIDTH", 10.0))  # Default from SUMEXTR
         # Or from MWIDTH if TRAM?
         if operat == "TRAM":
             # TRAM usually uses tramlines. SUMEXTR uses WIDTH.
