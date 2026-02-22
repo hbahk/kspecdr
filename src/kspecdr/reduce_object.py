@@ -557,6 +557,7 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
     length NFIB) to the RED file for downstream diagnostics.
 
     Methods (``TPMETH`` arg, default ``'OFFSKY'``):
+    - ``'OFF'``: fix all fiber throughputs to 1.0 (no correction; THPUT HDU still written)
     - ``'OFFSKY'``: read pre-computed throughputs from ``THPUT_FILENAME``
     - ``'SKYLINE(KGB)'``: Karl Glazebrook's sky-line robust-fit algorithm
     - ``'MEDIAN'``: simple per-fiber mean, normalized by median
@@ -640,6 +641,10 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
                 thput_vec = _umfspec_ftpc(spec)
                 logger.info("Throughput: per-fiber median (UMFSPEC)")
 
+            elif tpmeth == 'OFF':
+                thput_vec[:] = 1.0
+                logger.info("Throughput: OFF (all fibers fixed to 1.0)")
+
             else:
                 logger.warning(
                     "Unknown TPMETH '%s' — skipping throughput calibration", tpmeth
@@ -672,6 +677,7 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
 
         hist_map = {
             '_EXTERNAL':    'Throughput calibration using THROUGHPUT.fits',
+            'OFF':          'Throughput calibration disabled (all fibers = 1.0)',
             'OFFSKY':       f'Throughput calibration using OFFSKY from '
                             f'{args.get("THPUT_FILENAME", "")}',
             'MEDIAN':       'Throughput calibration using per-fiber median (UMFSPEC)',
