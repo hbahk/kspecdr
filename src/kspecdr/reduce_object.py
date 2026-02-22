@@ -51,6 +51,12 @@ def reduce_object(args: Dict[str, Any]) -> None:
         - ``INC_RWSS``: Include Reduced Without Sky Subtraction copy (bool)
         - ``SKYSPRSMP``: Super sky subtraction (bool)
         - ``SKYSUB``: Enable sky subtraction (bool, default True)
+        - ``SKYCOMBINE``: Sky fiber combination method
+          (``'MEAN'`` | ``'MEDIAN'`` | ``'SIGCLIP'``, default ``'MEAN'``)
+        - ``SKYCOMBINE_SIGMA``: Sigma-clipping threshold for ``SIGCLIP``
+          (float, default 3.0)
+        - ``SKYCOMBINE_ITERS``: Max iterations for ``SIGCLIP``
+          (int, default 5)
         - ``SKYSUB_PCA``: Enable PCA sky subtraction (bool)
         - ``CALIBFLUX``: Enable flux calibration (bool)
         - ``TELCOR``: Enable telluric correction (bool)
@@ -710,8 +716,13 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
     and subtracts it from all fibers.  The combined sky is written to a
     ``SKY`` ImageHDU.
 
-    Combination method is controlled by ``SKYCOMBINE`` arg (``'MEAN'`` or
-    ``'MEDIAN'``, default ``'MEAN'``).
+    Combination method is controlled by ``SKYCOMBINE`` arg:
+
+    - ``'MEAN'`` (default): straight mean of sky fibers.
+    - ``'MEDIAN'``: median combination.
+    - ``'SIGCLIP'``: iterative sigma-clipping mean.  Clipping threshold and
+      maximum iterations are controlled by ``SKYCOMBINE_SIGMA`` (default 3.0)
+      and ``SKYCOMBINE_ITERS`` (default 5).
 
     Variance propagation: ``Var_out = Var_fib + Var_sky`` where ``Var_sky``
     already accounts for the combination of N_sky fibers.
@@ -726,7 +737,7 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
         return
 
     combine_method = str(args.get('SKYCOMBINE', 'MEAN')).upper().strip()
-    if combine_method not in ('MEAN', 'MEDIAN'):
+    if combine_method not in ('MEAN', 'MEDIAN', 'SIGCLIP'):
         logger.warning(
             "Unknown SKYCOMBINE '%s' — defaulting to MEAN", combine_method
         )
@@ -795,6 +806,15 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
             sky_spec = np.nanmedian(sky_stack, axis=0)
             # Variance of median ≈ (π/2) * mean_var / N
             sky_var  = (np.pi / 2.0) * np.nanmean(var_stack, axis=0) / n_sky
+        elif combine_method == 'SIGCLIP':
+            sigma     = float(args.get('SKYCOMBINE_SIGMA', 3.0))
+            max_iters = int(args.get('SKYCOMBINE_ITERS', 5))
+            sky_spec, sky_var = _sigclip_combine(
+                sky_stack, var_stack, sigma=sigma, max_iters=max_iters
+            )
+            logger.info(
+                "Sky sigma-clipping: sigma=%.1f, max_iters=%d", sigma, max_iters
+            )
         else:  # MEAN
             sky_spec = np.nanmean(sky_stack, axis=0)
             # Error propagation for mean of N independent measurements
@@ -827,6 +847,58 @@ def _skysub(red_filename: str, args: Dict[str, Any]) -> None:
 # =====================================================================
 # P1 — Private Helpers
 # =====================================================================
+
+def _sigclip_combine(
+    sky_stack: 'np.ndarray',
+    var_stack: 'np.ndarray',
+    sigma: float = 3.0,
+    max_iters: int = 5,
+) -> 'tuple[np.ndarray, np.ndarray]':
+    """Iterative sigma-clipping mean combination of sky fibers.
+
+    For each wavelength pixel, computes the mean and standard deviation of the
+    contributing sky fibers and masks values that deviate more than ``sigma``
+    standard deviations from the mean.  Iteration continues until no new
+    pixels are clipped or ``max_iters`` is reached.
+
+    Parameters
+    ----------
+    sky_stack : ndarray, shape (N_sky, NPIX)
+        Sky fiber spectra.
+    var_stack : ndarray, shape (N_sky, NPIX)
+        Corresponding variance arrays.
+    sigma : float
+        Clipping threshold in units of standard deviations.
+    max_iters : int
+        Maximum number of clipping iterations.
+
+    Returns
+    -------
+    sky_spec : ndarray, shape (NPIX,)
+        Sigma-clipped mean sky spectrum.
+    sky_var : ndarray, shape (NPIX,)
+        Propagated variance of the combined sky spectrum.
+    """
+    mask = ~np.isfinite(sky_stack)   # True = bad/clipped
+
+    for _ in range(max_iters):
+        work = np.where(mask, np.nan, sky_stack)
+        mean = np.nanmean(work, axis=0)           # (NPIX,)
+        std  = np.nanstd(work, axis=0)            # (NPIX,)
+        new_mask = mask | (np.abs(sky_stack - mean[np.newaxis, :]) > sigma * std[np.newaxis, :])
+        if np.array_equal(new_mask, mask):
+            break
+        mask = new_mask
+
+    work     = np.where(mask, np.nan, sky_stack)
+    var_work = np.where(mask, np.nan, var_stack)
+    n_eff    = np.sum(~mask, axis=0).clip(min=1).astype(float)   # (NPIX,)
+
+    sky_spec = np.nanmean(work, axis=0)
+    sky_var  = np.nansum(var_work, axis=0) / n_eff ** 2
+
+    return sky_spec, sky_var
+
 
 def _write_image_hdu(f: ImageFile, name: str, data: 'np.ndarray') -> None:
     """Add or overwrite a named ImageHDU inside an open ImageFile context."""
