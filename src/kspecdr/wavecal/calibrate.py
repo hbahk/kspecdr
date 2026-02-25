@@ -582,9 +582,21 @@ def calibrate_spectral_axes(
     maxshift: int,
     diagnostic: Optional[bool] = False,
     diagnostic_dir: Optional[Path] = None,
+    use_blends: bool = False,
 ) -> tuple[np.ndarray, int, dict]:
     """
     Calibrate the pixels of extracted arclamp spectra.
+
+    Parameters
+    ----------
+    use_blends : bool, optional
+        If True, blended lines (lines closer than 3-sigma to a neighbour) are
+        included in the calibration rather than being excluded.  Downstream
+        quality checks (cross-correlation score, Gaussian fit quality) still
+        filter out lines that cannot be reliably centroided, so only lines that
+        can be individually measured will contribute to the solution.  This is
+        useful in spectral regions where lines are densely packed.  Default is
+        False (blended lines are excluded as before).
 
     Returns
     -------
@@ -626,7 +638,7 @@ def calibrate_spectral_axes(
     m = len(muv)
     logger.info(f"Unique lines: {m}")
 
-    # Mask blends (2.1)
+    # Measure arc-line width from the reference fibre
     ref_signal = spectra[:, ref_fib]
     ref_signal = np.nan_to_num(ref_signal)
     _, _, sigma_inpix, _, _ = analyse_arc_signal(ref_signal)
@@ -635,17 +647,28 @@ def calibrate_spectral_axes(
     arcline_sigma = sigma_inpix * disp
 
     mask = np.zeros(m, dtype=bool)
-    diffs = np.diff(muv)
-    blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
 
-    for idx in blend_indices:
-        if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
-            mask[idx] = True
-            mask[idx + 1] = True
-        elif av[idx] >= 10.0 * av[idx + 1]:
-            mask[idx + 1] = True
-        else:
-            mask[idx] = True
+    if not use_blends:
+        # Mask blends (2.1): exclude lines that are closer than 3-sigma to a
+        # neighbour so that overlapping profiles don't distort the centroid fit.
+        diffs = np.diff(muv)
+        blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
+
+        for idx in blend_indices:
+            if av[idx] < 10.0 * av[idx + 1] and av[idx + 1] < 10.0 * av[idx]:
+                mask[idx] = True
+                mask[idx + 1] = True
+            elif av[idx] >= 10.0 * av[idx + 1]:
+                mask[idx + 1] = True
+            else:
+                mask[idx] = True
+
+        logger.info(f"Blend-masked lines: {mask.sum()} / {m}")
+    else:
+        logger.info(
+            "use_blends=True: blend masking skipped; "
+            f"all {m} lines passed to cross-correlation and peak fitting."
+        )
 
     # Extract Template
     template_spectra, template_mask, lmr, sigma_inpix, nlm = extract_template_spectrum(

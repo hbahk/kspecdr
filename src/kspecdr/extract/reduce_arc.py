@@ -169,9 +169,12 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
             if instrument_code == INST_AAOMEGA_SAMI:
                 maxshift = 150
 
+            use_blends = args.get("USE_BLENDS", False)
+
             pixcal_dp, status, resolution_info = calibrate_spectral_axes(
                 nx, nf, spectra, variance, wave_axis, goodfib, wlist, ilist, listsize, maxshift,
                 diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
+                use_blends=use_blends,
             )
 
             if status == 0:
@@ -415,17 +418,27 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
     disp = np.abs(master_cen_axis[-1] - master_cen_axis[0]) / (master_npix - 1)
     arcline_sigma = avg_sigma_inpix * disp
 
+    use_blends = frames_metadata[0]["args"].get("USE_BLENDS", False)
+
     m = len(master_muv)
     master_mask = np.zeros(m, dtype=bool)
-    diffs = np.diff(master_muv)
-    blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
-    for idx in blend_indices:
-        if master_av[idx] < 10.0 * master_av[idx + 1] and master_av[idx + 1] < 10.0 * master_av[idx]:
-            master_mask[idx] = True; master_mask[idx + 1] = True
-        elif master_av[idx] >= 10.0 * master_av[idx + 1]:
-            master_mask[idx + 1] = True
-        else:
-            master_mask[idx] = True
+
+    if not use_blends:
+        diffs = np.diff(master_muv)
+        blend_indices = np.where(diffs < 3.0 * arcline_sigma)[0]
+        for idx in blend_indices:
+            if master_av[idx] < 10.0 * master_av[idx + 1] and master_av[idx + 1] < 10.0 * master_av[idx]:
+                master_mask[idx] = True; master_mask[idx + 1] = True
+            elif master_av[idx] >= 10.0 * master_av[idx + 1]:
+                master_mask[idx + 1] = True
+            else:
+                master_mask[idx] = True
+        logger.info(f"Blend-masked lines: {master_mask.sum()} / {m}")
+    else:
+        logger.info(
+            "use_blends=True: blend masking skipped; "
+            f"all {m} lines passed to cross-correlation and peak fitting."
+        )
 
     # 4. Identify Lines & Global Fit
     maxshift = frames_metadata[0]["args"].get("CRSCGMA_MS", 70) # Use first frame's setting
