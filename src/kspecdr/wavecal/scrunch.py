@@ -150,7 +150,7 @@ def scrunch_from_arc_id(obj_filename, arc_filename, args, reverse=False):
         # Robust dispersion estimate
         disp = (center_wave[-1] - center_wave[0]) / (len(center_wave) - 1)
 
-        # Define linear output axis
+        # Define linear output axis (used as the common scrunched wavelength grid)
         out_axis = np.linspace(min_wave, max_wave, nx)
 
         # Perform Scrunch
@@ -162,6 +162,22 @@ def scrunch_from_arc_id(obj_filename, arc_filename, args, reverse=False):
             obj_file.write_image_data(new_spectra.T)
             obj_file.write_variance_data(new_var.T)
             obj_file.set_header_value("SCRUNCH", True)
+
+            # Update WAVELA to store the scrunched wavelength solution.
+            # We write a 2D array (NFIB, NPIX) where each fiber shares the same
+            # 1D linear wavelength axis (out_axis). This matches how arc RED
+            # files store WAVELA (per-fiber rows, spectral axis along NAXIS1)
+            # and ensures downstream code (e.g. flux calibration) sees the
+            # correct wavelength grid for scrunched data.
+            try:
+                wave_2d = np.tile(out_axis, (nf, 1)).astype(np.float32)
+                obj_file.write_wave_data(wave_2d)
+            except ValueError:
+                # If no WAVELA HDU is present, skip silently but keep SCRUNCH flag.
+                logger.warning(
+                    "WAVELA HDU not found in %s; scrunched wavelengths not written.",
+                    obj_filename,
+                )
 
         else:
             # Reverse: Input=Linear Axis (out_axis). Output=Pixel-based Wavelengths (Arc Wave).
