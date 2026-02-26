@@ -170,11 +170,23 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
                 maxshift = 150
 
             use_blends = args.get("USE_BLENDS", False)
+            poly_order = int(args.get("WAVEPOLY_ORDER", 3))
 
             pixcal_dp, status, resolution_info = calibrate_spectral_axes(
-                nx, nf, spectra, variance, wave_axis, goodfib, wlist, ilist, listsize, maxshift,
-                diagnostic=get_diagnostic, diagnostic_dir=diagnostic_dir,
+                nx,
+                nf,
+                spectra,
+                variance,
+                wave_axis,
+                goodfib,
+                wlist,
+                ilist,
+                listsize,
+                maxshift,
+                diagnostic=get_diagnostic,
+                diagnostic_dir=diagnostic_dir,
                 use_blends=use_blends,
+                poly_order=poly_order,
             )
 
             if status == 0:
@@ -419,6 +431,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
     arcline_sigma = avg_sigma_inpix * disp
 
     use_blends = frames_metadata[0]["args"].get("USE_BLENDS", False)
+    poly_order = int(frames_metadata[0]["args"].get("WAVEPOLY_ORDER", 3))
 
     m = len(master_muv)
     master_mask = np.zeros(m, dtype=bool)
@@ -450,8 +463,11 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
 
     logger.info(f"Total points found on master template: {len(x_pts)}")
 
-    if len(x_pts) < 4:
-        logger.error("Not enough points found for global fit.")
+    if len(x_pts) < poly_order + 1:
+        logger.error(
+            "Not enough points found for global fit: "
+            f"need at least {poly_order + 1}, got {len(x_pts)}."
+        )
         return
 
     # Find master_muv indices corresponding to each y_pts (wavelength) for lamp mapping
@@ -463,7 +479,7 @@ def reduce_arcs(args_list: List[Dict[str, Any]], get_diagnostic: Optional[bool] 
     lamps = [lamp_list[master_lamp_indices[i]] for i in matched_indices]
 
     coeffs, residuals, outliers = fit_calibration_model(
-        np.array(x_pts), np.array(y_pts), poly_order=3
+        np.array(x_pts), np.array(y_pts), poly_order=poly_order
     )
 
     if len(residuals) > 0:

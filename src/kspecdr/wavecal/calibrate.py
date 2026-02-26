@@ -2,7 +2,6 @@
 Main calibration routine.
 """
 
-import sys
 import numpy as np
 import logging
 from scipy.interpolate import interp1d
@@ -583,6 +582,7 @@ def calibrate_spectral_axes(
     diagnostic: Optional[bool] = False,
     diagnostic_dir: Optional[Path] = None,
     use_blends: bool = False,
+    poly_order: int = 3,
 ) -> tuple[np.ndarray, int, dict]:
     """
     Calibrate the pixels of extracted arclamp spectra.
@@ -691,12 +691,17 @@ def calibrate_spectral_axes(
     )
 
     logger.info(f"Valid points: {len(x_pts)}")
-    if len(x_pts) < 4:
-        logger.warning(f"Not enough valid points for cubic fit - {len(x_pts)} points.")
+    if len(x_pts) < poly_order + 1:
+        logger.warning(
+            f"Not enough valid points for polynomial fit (order={poly_order}) - "
+            f"{len(x_pts)} points."
+        )
         return np.zeros((npix + 1, nfib)), -1, {}
 
     # Fit Model
-    coeffs, residuals, outliers = fit_calibration_model(x_pts, y_pts, poly_order=3)
+    coeffs, residuals, outliers = fit_calibration_model(
+        x_pts, y_pts, poly_order=poly_order
+    )
 
     # Calculate stats for logging
     if len(residuals) > 0:
