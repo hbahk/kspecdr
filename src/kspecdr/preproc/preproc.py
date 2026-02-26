@@ -30,6 +30,7 @@ def combine_image(
     output_file: str,
     method: str = 'MEDIAN',
     adjust_levels: bool = True,
+    level_method: str = 'SCALE',
     sigma: float = 5.0,
     **kwargs
 ) -> str:
@@ -46,6 +47,10 @@ def combine_image(
         Combination method ('MEDIAN', 'MEAN', 'SIGMA_CLIP'). Default is 'MEDIAN'.
     adjust_levels : bool
         Whether to adjust levels (normalize) before combining. Default is True.
+    level_method : str
+        Method for level adjustment when ``adjust_levels`` is True.
+        'SCALE' (default): multiplicative scaling using median of central region.
+        'OFFSET': additive offset using median of central region.
     sigma : float
         Sigma value for sigma clipping (used only if method='SIGMA_CLIP'). Default is 5.0.
     **kwargs
@@ -78,7 +83,7 @@ def combine_image(
     # Using (ny, nx) to match read_image_data output shape (rows, cols)
     stack_data = np.zeros((n_files, ny, nx), dtype=np.float32)
     stack_var = np.zeros((n_files, ny, nx), dtype=np.float32)
-    scales = np.ones(n_files)
+    levels = np.ones(n_files, dtype=float)
     
     # Read all files
     for i, fname in enumerate(input_files):
@@ -99,19 +104,33 @@ def combine_image(
                 col1, col2 = nx // 4, 3 * nx // 4
                 med_val = np.nanmedian(data[row1:row2, col1:col2])
                 if med_val > 0:
-                    scales[i] = med_val
+                    levels[i] = med_val
                 else:
-                    scales[i] = 1.0
+                    levels[i] = 1.0
                     
     # Normalize scales
     if adjust_levels:
-        scales /= np.median(scales)
-        logger.info(f"Relative flux scalings: {scales}")
-        
-        # Apply scaling
-        for i in range(n_files):
-            stack_data[i, :, :] /= scales[i]
-            stack_var[i, :, :] /= (scales[i]**2)
+        lm = level_method.upper()
+        if lm == 'SCALE':
+            # Multiplicative scaling so that central-region medians match
+            scales = levels.copy()
+            scales /= np.median(scales)
+            logger.info(f"Relative flux scalings: {scales}")
+            
+            for i in range(n_files):
+                stack_data[i, :, :] /= scales[i]
+                stack_var[i, :, :] /= (scales[i] ** 2)
+        elif lm == 'OFFSET':
+            # Additive offsets so that central-region medians match
+            ref_level = np.median(levels)
+            offsets = levels - ref_level
+            logger.info(f"Relative flux offsets: {offsets}")
+            
+            for i in range(n_files):
+                stack_data[i, :, :] -= offsets[i]
+            # Variance is unchanged by constant offsets
+        else:
+            raise ValueError(f"Unknown level_method: {level_method}")
             
     # Combine
     if method.upper() == 'MEDIAN':
@@ -170,7 +189,7 @@ def combine_image(
     # Update header
     hdu.header['HISTORY'] = f"Combined {n_files} images using {method}"
     if adjust_levels:
-        hdu.header['HISTORY'] = "Flux levels adjusted before combination"
+        hdu.header['HISTORY'] = f"Flux levels adjusted before combination (mode={level_method.upper()})"
     
     # Create variance HDU
     var_hdu = fits.ImageHDU(combined_var, name='VARIANCE')
@@ -198,6 +217,8 @@ def reduce_bias(
     bias_type: str = "MASTER",
     method: Optional[str] = 'SIGMA_CLIP',
     sigma: Optional[float] = 4.0,
+    adjust_levels: bool = True,
+    level_method: str = "OFFSET",
     **kwargs
 ) -> str:
     """
@@ -209,6 +230,18 @@ def reduce_bias(
         List of raw bias filenames
     output_file : str
         Output master bias filename
+    bias_type : str
+        Type of bias frame ('MASTER', 'OVERSCAN', 'OTHER')
+    method : str, optional
+        Combination method ('MEDIAN', 'MEAN', 'SIGMA_CLIP'). Default is 'SIGMA_CLIP'.
+    sigma : float, optional
+        Sigma value for sigma clipping (used only if method='SIGMA_CLIP'). Default is 4.0.
+    adjust_levels : bool, optional
+        Whether to adjust levels (normalize) before combining. Default is True.
+    level_method : str, optional
+        Method for level adjustment when ``adjust_levels`` is True.
+        'SCALE' (default): multiplicative scaling using median of central region.
+        'OFFSET': additive offset using median of central region.
         
     Returns
     -------
@@ -236,7 +269,8 @@ def reduce_bias(
         output_file, 
         method=method,
         sigma=sigma,
-        adjust_levels=False
+        adjust_levels=adjust_levels,
+        level_method=level_method,
     )
     
     with ImageFile(combined_file, mode='UPDATE') as im:
