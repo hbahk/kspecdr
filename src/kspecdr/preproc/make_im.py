@@ -289,6 +289,9 @@ class MakeIM:
         image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
 
+        # Optional overscan region (in image_data coordinates: (x1, x2, y1, y2))
+        overscan_region = kwargs.get("overscan_region", None)
+
         if use_bias:
             # Subtract bias frame if provided
             if bias_filename is not None:
@@ -308,11 +311,29 @@ class MakeIM:
                     logger.info(f"Bias subtraction method: {bias_method}")
                     image_data -= bias_level
                     bias_record = np.nanmedian(bias_level)
-                    logger.info(f"Subtracted bias level: {bias_record:.2f}")
+                    logger.info(f"Subtracted bias level (from bias frame): {bias_record:.2f}")
+
+                    # If overscan information is available for the target image,
+                    # measure the residual level in the overscan region after
+                    # bias-frame subtraction and subtract that residual so that
+                    # the final overscan is close to zero.
+                    if overscan_region is not None:
+                        overscan_residual = self._calculate_bias_level(
+                            image_data, overscan_region
+                        )
+                        image_data -= overscan_residual
+                        bias_record += overscan_residual
+                        logger.info("Refined bias subtraction using overscan region")
+                        logger.info(
+                            f"Additional overscan level subtracted: {overscan_residual:.2f}"
+                        )
+                    else:
+                        logger.info(
+                            "No overscan region information provided; "
+                            "skipping overscan-based refinement of bias subtraction"
+                        )
             else:
                 # Get overscan region from header or use defaults
-                overscan_region = kwargs.get("overscan_region", None)
-
                 if overscan_region is not None:
                     # Process overscan region
                     bias_level = self._calculate_bias_level(image_data, overscan_region)
