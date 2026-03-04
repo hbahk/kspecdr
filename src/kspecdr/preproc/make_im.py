@@ -655,13 +655,13 @@ class MakeIM:
         # Default parameters for astroscrappy
         # TODO: add gain, readnoise, satlevel
         default_params = {
-            "sigclip": 10.0,
-            "sigfrac": 0.5,
+            "sigclip": 4.5,
+            "sigfrac": 0.3,
             "objlim": 5.0,
             "gain": None,
             "readnoise": None,
-            # 'satlevel': self.saturation_value,
-            "satlevel": np.inf,
+            "satlevel": self.saturation_value,
+            # "satlevel": np.inf,
             "verbose": False,
         }
 
@@ -689,7 +689,7 @@ class MakeIM:
             # This returns (mask, cleaned_data)
             mask, cleaned_data = astroscrappy.detect_cosmics(
                 image_data,
-                # invar=variance_data,
+                invar=variance_data,
                 sigclip=params["sigclip"],
                 sigfrac=params["sigfrac"],
                 objlim=params["objlim"],
@@ -697,7 +697,7 @@ class MakeIM:
                 readnoise=params["readnoise"],
                 satlevel=params["satlevel"],
                 verbose=params["verbose"],
-                sepmed=False,
+                sepmed=True,
             )
 
             # Count cosmic rays detected
