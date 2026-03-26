@@ -8,6 +8,7 @@ CALIBRATED_SPECTRA.dat
 identified_arcs.dat
 global_fit_coefficients.dat
 CrsCgm0.fits
+*.log
 
 # Large data files (templates, downloaded grids) — not tracked in git
 data/templates/

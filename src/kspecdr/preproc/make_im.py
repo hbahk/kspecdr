@@ -67,6 +67,11 @@ class MakeIM:
         bias_filename: Optional[str] = None,
         use_dark: bool = False,
         dark_filename: Optional[str] = None,
+        use_glow_pca: bool = False,
+        glow_pca_filename: Optional[str] = None,
+        dc_rate_filename: Optional[str] = None,
+        glow_n_components: int = 5,
+        glow_fit_rows: Optional[list] = None,
         use_lflat: bool = False,
         lflat_filename: Optional[str] = None,
         bad_pixel_mask: Optional[str] = None,
@@ -90,6 +95,24 @@ class MakeIM:
             Whether to subtract dark frame
         dark_filename : str, optional
             Path to dark frame file
+        use_glow_pca : bool, optional
+            Whether to subtract glow using PCA templates instead of (or in addition
+            to) simple dark subtraction.
+        glow_pca_filename : str, optional
+            Path to the PCA glow cube FITS file (glow_pca_cube.fits).  Must contain
+            a PRIMARY HDU with the mean glow pattern and extensions named PC01…PCxx
+            with individual PCA component images.
+        dc_rate_filename : str, optional
+            Path to a FITS file with the per-pixel dark-current rate [e-/s].  If
+            None, the DC-current contribution is assumed to be zero and only the
+            glow (mean + PCA) model is subtracted.
+        glow_n_components : int, optional
+            Number of PCA components to use in the glow fit (default: 5).
+        glow_fit_rows : list of (int, int), optional
+            Row ranges (axis=0) to include when fitting the glow model, e.g.
+            ``[(0, 500), (800, 1300)]``.  Pixels outside these ranges are
+            excluded from the least-squares fit but the model is still evaluated
+            and subtracted everywhere.  If None, all finite pixels are used.
         use_lflat : bool, optional
             Whether to divide by long-slit flat field
         lflat_filename : str, optional
@@ -146,6 +169,18 @@ class MakeIM:
                 if self.verbose:
                     logger.info("Subtracting dark frame...")
                 self._subtract_dark(im_file, dark_filename)
+
+            # Step 4b: Subtract glow using PCA templates
+            if use_glow_pca and glow_pca_filename:
+                if self.verbose:
+                    logger.info("Subtracting glow via PCA template fit...")
+                self._subtract_glow_pca(
+                    im_file,
+                    glow_pca_filename=glow_pca_filename,
+                    dc_rate_filename=dc_rate_filename,
+                    n_components=glow_n_components,
+                    fit_rows=glow_fit_rows,
+                )
 
             # Step 5: Create and initialize variance HDU
             if self.verbose:
@@ -420,6 +455,131 @@ class MakeIM:
 
             # Add history record
             im_file.add_history(f"Subtracted dark frame {dark_filename}")
+
+    def _subtract_glow_pca(
+        self,
+        im_file: ImageFile,
+        glow_pca_filename: str,
+        dc_rate_filename: Optional[str] = None,
+        n_components: int = 5,
+        fit_rows: Optional[list] = None,
+    ) -> None:
+        """
+        Subtract glow from an image using a PCA template fit.
+
+        The glow model is:
+            glow_model = alpha_0 * glow_mean + sum_i(alpha_i * PC_i)
+
+        If ``dc_rate_filename`` is provided, a DC-current model
+        ``dc_rate * exptime`` is subtracted first, and the PCA fit is applied
+        to the residual.  Without it, the PCA fit is applied to the raw
+        (bias-subtracted) image directly.
+
+        Parameters
+        ----------
+        im_file : ImageFile
+            The image file to process (opened in UPDATE mode).
+        glow_pca_filename : str
+            Path to glow_pca_cube.fits (PRIMARY = mean, PC01…PCxx extensions).
+        dc_rate_filename : str, optional
+            Path to a FITS file with the per-pixel DC-current rate [e-/s].
+        n_components : int
+            Number of PCA components to include in the fit.
+        fit_rows : list of (int, int), optional
+            Row (axis=0) ranges used for fitting, e.g. ``[(0, 500), (800, 1300)]``.
+            If None, all finite pixels are used.
+        """
+        from astropy.stats import sigma_clip as astro_sigma_clip
+
+        image_data = im_file.read_image_data().astype(np.float64)
+        exptime = float(im_file.get_header_value("EXPOSED", 1.0))
+
+        # --- Load PCA templates ---
+        with fits.open(glow_pca_filename) as cube:
+            glow_mean = cube[0].data.astype(np.float64)
+            pc_extnames = [h.name for h in cube if h.name.upper().startswith("PC")]
+            pca_comps = [
+                cube[name].data.astype(np.float64)
+                for name in pc_extnames[:n_components]
+            ]
+
+        if len(pca_comps) < n_components:
+            logger.warning(
+                "Requested %d PCA components but cube only has %d — using %d",
+                n_components, len(pca_comps), len(pca_comps),
+            )
+
+        # --- Handle overscan rows: template may be shorter than the image ---
+        # If the image has extra rows at the top (overscan), trim them before
+        # fitting and only apply the correction to the science region.
+        tmpl_rows = glow_mean.shape[0]
+        img_rows = image_data.shape[0]
+        n_overscan = img_rows - tmpl_rows
+        if n_overscan < 0:
+            logger.warning(
+                "Glow template (%d rows) is taller than image (%d rows) — skipping glow subtraction",
+                tmpl_rows, img_rows,
+            )
+            return
+        if n_overscan > 0:
+            logger.info(
+                "Image has %d extra rows vs. template — treating first %d rows as overscan",
+                n_overscan, n_overscan,
+            )
+        science = image_data[n_overscan:, :]  # view into the science region
+
+        # --- DC-current model ---
+        if dc_rate_filename:
+            with fits.open(dc_rate_filename) as f:
+                dc_rate = f[0].data.astype(np.float64)
+            dc_model = dc_rate * exptime
+        else:
+            dc_model = np.zeros_like(science)
+
+        residual = science - dc_model
+
+        # --- Build fitting mask (coordinates relative to science region) ---
+        fit_mask_2d = np.ones(science.shape, dtype=bool)
+        if fit_rows is not None:
+            fit_mask_2d[:] = False
+            for r0, r1 in fit_rows:
+                fit_mask_2d[r0:r1, :] = True
+
+        # --- Design matrix: [glow_mean, PC1, PC2, …] ---
+        templates = [glow_mean] + list(pca_comps)
+        A = np.column_stack([t.ravel() for t in templates])  # (Npix, 1+n_comp)
+        b = residual.ravel()
+
+        pixel_ok = np.isfinite(b) & np.all(np.isfinite(A), axis=1) & fit_mask_2d.ravel()
+        active = pixel_ok.copy()
+
+        coeffs = None
+        for _ in range(5):
+            if active.sum() < A.shape[1]:
+                logger.warning("Too few pixels for glow PCA fit — falling back to no glow subtraction")
+                return
+            coeffs, _, _, _ = np.linalg.lstsq(A[active], b[active], rcond=None)
+            resid_fit = b[active] - A[active] @ coeffs
+            clipped = astro_sigma_clip(resid_fit, sigma=3.0, masked=True)
+            new_active = active.copy()
+            new_active[active] = ~clipped.mask
+            if np.array_equal(new_active, active):
+                break
+            active = new_active
+
+        glow_model = (A @ coeffs).reshape(science.shape)
+        corrected = image_data.copy()
+        corrected[n_overscan:, :] = science - dc_model - glow_model
+
+        im_file.write_image_data(corrected.astype(np.float32))
+        im_file.add_history(
+            f"Subtracted PCA glow model ({len(pca_comps)} components, "
+            f"exptime={exptime:.1f}s, dc_rate={'yes' if dc_rate_filename else 'no'})"
+        )
+        logger.info(
+            "Glow PCA subtraction done: exptime=%.1fs, n_comp=%d, n_overscan=%d, coeffs=%s",
+            exptime, len(pca_comps), n_overscan, np.array2string(coeffs, precision=3),
+        )
 
     def _add_variance(self, im_file: ImageFile) -> None:
         """
@@ -995,6 +1155,11 @@ def make_im(
     use_bias: bool = False,
     use_dark: bool = False,
     dark_filename: Optional[str] = None,
+    use_glow_pca: bool = False,
+    glow_pca_filename: Optional[str] = None,
+    dc_rate_filename: Optional[str] = None,
+    glow_n_components: int = 5,
+    glow_fit_rows: Optional[list] = None,
     use_lflat: bool = False,
     lflat_filename: Optional[str] = None,
     bad_pixel_mask: Optional[str] = None,
@@ -1016,9 +1181,24 @@ def make_im(
     use_bias : bool, optional
         Whether to subtract bias frame
     use_dark : bool, optional
-        Whether to subtract dark frame
+        Whether to subtract dark frame (simple exposure-time-scaled subtraction)
     dark_filename : str, optional
         Path to dark frame file
+    use_glow_pca : bool, optional
+        Whether to subtract glow using PCA templates.  Can be used instead of
+        or in addition to ``use_dark``.
+    glow_pca_filename : str, optional
+        Path to the PCA glow cube FITS file (PRIMARY = mean glow, extensions
+        PC01…PCxx = PCA component images).
+    dc_rate_filename : str, optional
+        Path to a FITS file with the per-pixel dark-current rate [e-/s].  If
+        None, no DC-current term is included in the glow model.
+    glow_n_components : int, optional
+        Number of PCA components to use in the glow fit (default: 5).
+    glow_fit_rows : list of (int, int), optional
+        Row (axis=0) ranges used for the glow fitting, e.g.
+        ``[(0, 500), (800, 1300)]``.  Pixels outside these ranges are excluded
+        from the fit but the model is subtracted everywhere.  None → all pixels.
     use_lflat : bool, optional
         Whether to divide by long-slit flat field
     lflat_filename : str, optional
@@ -1048,6 +1228,11 @@ def make_im(
         use_bias=use_bias,
         use_dark=use_dark,
         dark_filename=dark_filename,
+        use_glow_pca=use_glow_pca,
+        glow_pca_filename=glow_pca_filename,
+        dc_rate_filename=dc_rate_filename,
+        glow_n_components=glow_n_components,
+        glow_fit_rows=glow_fit_rows,
         use_lflat=use_lflat,
         lflat_filename=lflat_filename,
         bad_pixel_mask=bad_pixel_mask,
