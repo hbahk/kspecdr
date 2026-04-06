@@ -26,11 +26,13 @@ extensions = [
     'myst_nb',
 ]
 
-# Keep autodoc robust on Read the Docs even when optional runtime deps are absent.
+# Keep autodoc robust even when optional runtime deps are absent.
 autodoc_mock_imports = [
     "astroscrappy",
     "pywt",
     "tqdm",
+    "matplotlib",
+    "sklearn",
 ]
 
 autodoc_default_options = {
