@@ -69,3 +69,9 @@ scrunch_from_arc_id(
 
 - arc RED file includes `WAVELA` and `SHIFTS`
 - science red file has `SCRUNCH=True` after rebinning
+
+## See also
+
+- [Extraction API reference](../reference/extraction.md)
+- [Wavelength Calibration API reference](../reference/wavelength-calibration.md)
+- [Arc calibration theory](../explanations/isoplane-theory.md)
