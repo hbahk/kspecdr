@@ -1,5 +1,7 @@
 # Flux Calibration API
 
+End-to-end flux calibration: BOSZ template matching, photometric scaling, calibration-vector computation, and QC diagnostics. See the [flux calibration design document](../development/fluxcal-design.md) for the full specification.
+
 ```{eval-rst}
 .. automodule:: kspecdr.fluxcal.containers
    :members:

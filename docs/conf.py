@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath('../src'))
 # -- Project information -----------------------------------------------------
 
 project = 'kspecdr'
-copyright = '2025, KSPEC Team'
+copyright = '2025-2026, KSPEC Team'
 author = 'Hyeonguk Bahk'
 
 version = '0.1.0'
@@ -22,15 +22,31 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
+    'sphinx.ext.intersphinx',
     'myst_nb',
 ]
 
-# Keep autodoc robust on Read the Docs even when optional runtime deps are absent.
+# Keep autodoc robust even when optional runtime deps are absent.
 autodoc_mock_imports = [
     "astroscrappy",
     "pywt",
     "tqdm",
+    "matplotlib",
+    "sklearn",
 ]
+
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': False,
+    'show-inheritance': True,
+}
+
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3/', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'astropy': ('https://docs.astropy.org/en/stable/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/', None),
+}
 
 HAS_MERMAID = importlib.util.find_spec("sphinxcontrib.mermaid") is not None
 if HAS_MERMAID:

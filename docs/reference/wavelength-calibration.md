@@ -1,5 +1,7 @@
 # Wavelength Calibration API
 
+Arc-lamp analysis, line detection via wavelets, cross-correlation with reference catalogues, polynomial fitting, and spectral rebinning (scrunching). See the [arc calibration theory](../explanations/isoplane-theory.md) for background.
+
 ```{eval-rst}
 .. automodule:: kspecdr.extract.reduce_arc
    :members:

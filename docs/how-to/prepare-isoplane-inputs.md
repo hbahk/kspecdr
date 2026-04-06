@@ -33,3 +33,8 @@ Before reduction, check:
 - required keys exist (`INSTRUME`, `RO_GAIN`, `RO_NOISE`, `LAMBDAC`, `DISPERS`, `DISPAXIS`)
 - a `FIBRES` table exists
 - output is 2D and orientation is correct for your setup
+
+## See also
+
+- [Instrument API reference](../reference/instrument.md)
+- [Isoplane theory](../explanations/isoplane-theory.md)

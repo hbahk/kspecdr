@@ -52,3 +52,8 @@ make_tlm(
 - `*_tlm.fits` contains plausible traces for all expected fibers
 - `WAVELA` extension is present
 - no obvious crossing/jumping traces in detector edges
+
+## See also
+
+- [Preprocessing API reference](../reference/preprocessing.md)
+- [Tramline API reference](../reference/tramline.md)
