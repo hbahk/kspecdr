@@ -58,6 +58,8 @@ def make_tlm(args: Dict[str, Any]) -> None:
         Dictionary containing method arguments including:
         - 'IMAGE_FILENAME': Input image file path
         - 'TLMAP_FILENAME': Output tramline map file path (optional)
+        - 'WAVE_PREDICT': Isoplane wavelength prediction, 'OPTICAL' (default) or 'LINEAR'
+          (see ``predict_wavelength``)
     """
     args = init_args(args)
     im_fname = args.get("IMAGE_FILENAME")
@@ -996,7 +998,10 @@ def predict_wavelength(
     tramline_map : np.ndarray
         Tramline map array
     args : dict
-        Method arguments
+        Method arguments:
+        - 'WAVE_PREDICT': Isoplane only. 'OPTICAL' (default) uses the optical model of
+          ``kspecdr.inst.isoplane`` (grating equation + detector geometry); 'LINEAR' uses
+          LAMBDAC + DISPERS from the header.
 
     Returns
     -------
@@ -1009,6 +1014,12 @@ def predict_wavelength(
     if instrument_code == INST_TAIPAN:
         return predict_wavelength_taipan(im_file, nspec, nf)
     elif instrument_code == INST_ISOPLANE:
+        method = str((args or {}).get("WAVE_PREDICT", "OPTICAL")).upper()
+        if method == "OPTICAL":
+            wave = predict_wavelength_isoplane(im_file, nspec, nf)
+            if wave is not None:
+                return wave
+            logger.warning("Isoplane optical model unavailable; using LAMBDAC + DISPERS.")
         return predict_wavelength_from_dispersion(im_file, nspec, nf)
     raise NotImplementedError(
         f"Wavelength prediction for instrument code {instrument_code} not yet implemented. "
@@ -1070,11 +1081,46 @@ def predict_wavelength_from_dispersion(
     except Exception as e:
         logger.error(f"Error reading DISPERS or LAMBDAC from header: {e}")
         raise
-    dist_from_midpix = np.linspace(0.5, nspec + 0.5, nspec) - midpix
+    # pixel centres at 0.5, 1.5, ... (Fortran PIX - 0.5), one pixel apart
+    dist_from_midpix = np.arange(nspec) + 0.5 - midpix
     wavevec = lambdac + dispers * dist_from_midpix  # Angstroms
     wavelength_data = wavevec.reshape(nspec, 1).repeat(nf, axis=1)
 
     return wavelength_data
+
+
+def predict_wavelength_isoplane(
+    im_file: ImageFile, nspec: int, nf: int
+) -> Optional[np.ndarray]:
+    """
+    Predict Isoplane wavelengths from the optical model (2dfdr WLA_AAOMEGA equivalent).
+
+    Uses ``GRATLPMM`` and ``LAMBDAC`` from the header, the PIXIS pixel width
+    (``PI CAMERA SENSOR INFORMATION PIXEL WIDTH``, micron; 20 by default), and
+    ``kspecdr.inst.isoplane.ISOPLANE_OPTICS``. All fibres get the same prediction; the arc
+    calibration measures their offsets.
+
+    Returns
+    -------
+    np.ndarray or None
+        Wavelength (Angstrom) of shape (nspec, nf), or None if the header lacks the grating.
+    """
+    from ..inst.isoplane import ISOPLANE_PIXEL_MM, isoplane_wavelength
+
+    lpmm = im_file.get_header_value("GRATLPMM", None)
+    lambdac = im_file.get_header_value("LAMBDAC", None)
+    if lpmm is None or lambdac is None:
+        return None
+    try:
+        pixel_mm = float(im_file.get_header_value("PI CAMERA SENSOR INFORMATION PIXEL WIDTH")) * 1e-3
+    except (TypeError, ValueError):
+        pixel_mm = ISOPLANE_PIXEL_MM
+    wavevec = isoplane_wavelength(float(lpmm), float(lambdac), nspec, pixel_mm=pixel_mm)
+    logger.info(
+        f"Isoplane optical model: {float(lpmm):.0f} g/mm, LAMBDAC {float(lambdac):.0f} A -> "
+        f"{wavevec[0]:.1f}-{wavevec[-1]:.1f} A"
+    )
+    return wavevec.reshape(nspec, 1).repeat(nf, axis=1)
 
 
 def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:

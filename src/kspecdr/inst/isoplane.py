@@ -17,6 +17,73 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Optical model of the Isoplane SCT-320 + PIXIS 1300BX used for K-SPEC commissioning: the
+# Czerny-Turner grating equation with a tilted detector, as 2dfdr PREDICT_WAVELEN (WLA_6DF,
+# WLA_AAOMEGA). Started from the LightField calibration in the raw headers (focal length 328 mm,
+# inclusion angle 17.8 deg, detector angle 8.46 deg) and fitted to identified arc lines of the
+# commissioning arcs (150, 300 and 600 grooves/mm) with one pixel shift per frame. X0_PIX
+# (optical axis offset from the detector centre) is the median shift; the shift changes from
+# night to night by a few pixels, which the arc calibration absorbs.
+ISOPLANE_OPTICS = {
+    "FOCAL_MM": 329.68,
+    "INCLUSION_DEG": 18.306,
+    "DETECTOR_DEG": 8.841,
+    "X0_PIX": -11.85,
+}
+ISOPLANE_PIXEL_MM = 0.020  # PIXIS 1300BX pixel pitch
+
+
+def isoplane_wavelength(
+    lpmm: float,
+    lambdac: float,
+    npix: int,
+    pixel_mm: float = ISOPLANE_PIXEL_MM,
+    optics: Optional[dict] = None,
+    pix: Optional[np.ndarray] = None,
+    order: int = 1,
+) -> np.ndarray:
+    """
+    Wavelength at spectral pixel centres from the Isoplane optical model.
+
+    ``m lambda = d (sin alpha + sin beta)``; the grating angle psi follows from the central
+    wavelength, ``alpha = psi - gamma/2`` and ``beta = psi + gamma/2`` (gamma: inclusion
+    angle), and a pixel ``x`` mm from the optical axis sees
+    ``beta + atan(x cos delta / (f + x sin delta))`` (delta: detector tilt).
+
+    Parameters
+    ----------
+    lpmm : float
+        Grating grooves per mm (header ``GRATLPMM``).
+    lambdac : float
+        Central wavelength in Angstrom (header ``LAMBDAC``).
+    npix : int
+        Number of spectral pixels (dispersion along the image x axis, wavelength increasing).
+    pixel_mm : float, optional
+        Pixel pitch along the dispersion (mm).
+    optics : dict, optional
+        Overrides of ``ISOPLANE_OPTICS`` keys (``FOCAL_MM``, ``INCLUSION_DEG``,
+        ``DETECTOR_DEG``, ``X0_PIX``).
+    pix : np.ndarray, optional
+        0-based pixel positions to evaluate (default: all pixel centres).
+    order : int, optional
+        Diffraction order.
+
+    Returns
+    -------
+    np.ndarray
+        Wavelength (Angstrom, air: the grating equation holds in the ambient medium).
+    """
+    o = dict(ISOPLANE_OPTICS, **(optics or {}))
+    pix = np.arange(npix, dtype=float) if pix is None else np.asarray(pix, dtype=float)
+    d_nm = 1e6 / float(lpmm)
+    gam = np.radians(o["INCLUSION_DEG"])
+    dlt = np.radians(o["DETECTOR_DEG"])
+    psi = np.arcsin(order * (float(lambdac) / 10.0) / (2.0 * d_nm * np.cos(gam / 2.0)))
+    alpha, beta0 = psi - gam / 2.0, psi + gam / 2.0
+    x_mm = (pix - 0.5 * (npix - 1) - o["X0_PIX"]) * pixel_mm
+    beta = beta0 + np.arctan(x_mm * np.cos(dlt) / (o["FOCAL_MM"] + x_mm * np.sin(dlt)))
+    return d_nm / order * (np.sin(alpha) + np.sin(beta)) * 10.0
+
 
 def get_isoplane_readout_settings(header: fits.Header) -> dict:
     """
