@@ -4,7 +4,9 @@ Batch reduction for KSPEC commissioning nights.
 Phase 0 — calibration (always regenerated):
     For each calib directory: convert Flat_*/Arc_* raw frames to isoplane
     format, run make_im, make_tlm (from flats) and reduce_arc (wavelength
-    calibration). Check images are saved under calib/chkimg/.
+    calibration). Check images are saved under calib/chkimg/. Arcs get no dark
+    and no cosmic-ray cleaning, per-setup line lists, and the optical-model
+    prediction; object frames use the arc of their own night.
 
 Phase 1 — object frames:
     Reduces all tile_*.fits object frames for:
@@ -128,8 +130,9 @@ DATE_CONFIG = {
         "overscan_region": (0, 1, 0, 1340),
     },
     "20260204": {
-        # Own mbias/dark present; TLM from 20260129 (nearest night with TLM)
-        "calib_dir": COMM / "20260129" / "calib",
+        # Own flats, arcs, mbias, and dark. Its 1330-row readout puts the fibers 31 rows higher
+        # than on 20260129, so the 20260129 TLM (used before) does not fit these frames.
+        "calib_dir": COMM / "20260204" / "calib",
         "mbias_override": COMM / "20260204" / "calib" / "mbias.fits",
         "dark": COMM / "20260204" / "calib" / "mdark.fits",
         "overscan_region": (0, 31, 0, 1340),
@@ -143,33 +146,50 @@ DATE_CONFIG = {
     },
 }
 
-# Arc RED fallback order per spec_set (highest priority first)
-ARC_RED_SEARCH_ORDER = [
-    COMM / "20260129" / "calib" / "converted",
-    COMM / "20260127" / "calib" / "converted",
-    COMM / "20260125" / "calib" / "converted",
-]
+# Arc wavelength calibration. The arc spectra move by several pixels between nights (all
+# gratings together) but hardly within a night, so each night uses its own arcs;
+# another night's arc is a logged fallback only. Line lists are per setup
+# (data/arc_tables/HgArNeKrCd_<spec_set>.arc). reduce_arc writes WAVEDEV (max departure of
+# the solution from the optical-model prediction, px) and warns above 10 px: a cubic on few
+# lines can run away near the detector edges.
+ARC_LAMP_V1 = "HgArNeKrCd"
+
+
+def arc_lampname(spec_set: str) -> str:
+    """Per-setup arc line list if there is one, else the combined v1 list."""
+    name = f"{ARC_LAMP_V1}_{spec_set}"
+    return name if (ARC_TABLES_DIR / f"{name}.arc").exists() else ARC_LAMP_V1
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_global_arc_red_lookup() -> dict:
-    """Scan all converted/ dirs (priority order) and build spec_set → Path."""
-    lookup: dict[str, Path] = {}
-    for conv_dir in reversed(ARC_RED_SEARCH_ORDER):  # lowest priority first
-        if not conv_dir.exists():
-            continue
-        for p in conv_dir.glob("cArc_*_red.fits"):
-            # Extract spec_set from filename, e.g. "cArc_300_490_240s ..."
-            m = re.match(r"cArc_(\d+_\d+)_", p.name)
-            if m:
-                lookup[m.group(1)] = p
-    return lookup
+def find_arc_red(date: str, spec_set: str) -> Path | None:
+    """Arc RED for *spec_set*: the night's own calib first, else the nearest night (warned)."""
+    def reds(calib_dir: Path) -> list[Path]:
+        conv = calib_dir / "converted"
+        return sorted(conv.glob(f"cArc_{spec_set}_*_red.fits")) if conv.exists() else []
 
-
-ARC_RED_LOOKUP: dict[str, Path] = _build_global_arc_red_lookup()
+    calib_dir = DATE_CONFIG.get(date, {}).get("calib_dir", COMM / date / "calib")
+    own = reds(calib_dir)
+    if own:
+        return max(own, key=lambda p: extract_exptime_from_calib_name(p.name))
+    others = []
+    for night_dir in sorted(COMM.glob("2026????")):
+        found = reds(night_dir / "calib")
+        if found:
+            gap = abs((np.datetime64(f"{night_dir.name[:4]}-{night_dir.name[4:6]}-{night_dir.name[6:]}")
+                       - np.datetime64(f"{date[:4]}-{date[4:6]}-{date[6:]}")).astype(int))
+            others.append((gap, max(found, key=lambda p: extract_exptime_from_calib_name(p.name))))
+    if not others:
+        return None
+    gap, path = min(others, key=lambda t: t[0])
+    logger.warning(
+        "%s: no arc for spec_set=%s on this night; using %s (%d d away). Arc spectra shift "
+        "by several pixels between nights.", date, spec_set, path.name, gap,
+    )
+    return path
 
 
 def extract_tile_base(filename: str) -> str:
@@ -323,7 +343,7 @@ def save_chkimg_spectra(red_path: Path, out_path: Path, title: str = "",
 def save_chkimg_wavecal(conv_dir: Path, chkimg_dir: Path, spec_set: str,
                         title: str = "") -> None:
     """Save a 3-panel wavecal diagnostic check image as a PNG."""
-    diagnostic_dir = conv_dir / "diagnostic"
+    diagnostic_dir = conv_dir / "diagnostic" / spec_set
     if not diagnostic_dir.exists():
         logger.warning("  wavecal diagnostic dir not found: %s", diagnostic_dir)
         return
@@ -349,7 +369,7 @@ def save_chkimg_wavecal(conv_dir: Path, chkimg_dir: Path, spec_set: str,
 
     try:
         wlist, _ilist, _labels, _nlist = read_arc_file(
-            2, np.array(xlim), "HgArNeKrCd", arc_dir=ARC_TABLES_DIR
+            2, np.array(xlim), arc_lampname(spec_set), arc_dir=ARC_TABLES_DIR
         )
     except Exception as exc:
         logger.warning("  read_arc_file failed for spec_set=%s: %s", spec_set, exc)
@@ -613,12 +633,15 @@ def reduce_calib_date(date: str) -> None:
     conv_dir.mkdir(exist_ok=True)
     chkimg_dir.mkdir(exist_ok=True)
 
-    # Shared make_im call for calib frames (same as notebook: LACOSMIC + bias + dark).
-    def _make_im_calib(raw_conv_path: Path, im_path: Path) -> None:
+    # Shared make_im call for calib frames: flats with LACOSMIC + bias + dark. Arcs get bias
+    # only: LACOSMIC clips the cores of the compact 150_620 arc lines, and the
+    # exposure-scaled master dark drives the arc background negative, which makes
+    # reduce_arc mask parts of its template.
+    def _make_im_calib(raw_conv_path: Path, im_path: Path, arc: bool = False) -> None:
         # Guard against shape mismatch between the dark and this frame
         # (e.g. master dark is (1300,1340) but some dates read out (1330,1340)).
-        _use_dark = use_dark
-        if use_dark and dark_path is not None:
+        _use_dark = use_dark and not arc
+        if _use_dark and dark_path is not None:
             with fits.open(raw_conv_path) as _hf, fits.open(dark_path) as _hd:
                 if _hf[0].data.shape != _hd[0].data.shape:
                     logger.warning(
@@ -634,7 +657,7 @@ def reduce_calib_date(date: str) -> None:
             overscan_region=overscan_region,
             use_dark=_use_dark,
             dark_filename=dark_path.as_posix() if _use_dark else None,
-            cosmic_ray_method="LACOSMIC",
+            cosmic_ray_method="NONE" if arc else "LACOSMIC",
             verbose=False,
         )
 
@@ -755,21 +778,15 @@ def reduce_calib_date(date: str) -> None:
         ):
             arc_by_spec[ss] = f
 
-    # Arc spec_sets to skip (no usable wavelength solution available)
-    ARC_SKIP = {"600_430"}
-
     for spec_set, arc_raw in sorted(arc_by_spec.items()):
-        if spec_set in ARC_SKIP:
-            logger.info("%s: arc spec_set=%s in skip list — skipping", date, spec_set)
-            continue
-
-        # Find TLM: exact match first, then fall back to any available spec_set.
-        # TLM encodes only spatial fiber positions (unchanged across grating settings),
-        # so any TLM from the same night is valid for arc extraction.
+        # Find TLM: exact match first, then the same grating, then any spec_set of the night.
+        # Fiber traces of one grating agree closely between central wavelengths and to a
+        # couple of pixels between gratings, so a borrowed TLM still extracts the arc lines.
         if spec_set in calib_by_spec:
             tlm_spec = spec_set
         elif calib_by_spec:
-            tlm_spec = sorted(calib_by_spec.keys())[0]
+            same_grating = [s for s in sorted(calib_by_spec) if s.split("_")[0] == spec_set.split("_")[0]]
+            tlm_spec = (same_grating or sorted(calib_by_spec.keys()))[0]
             logger.warning(
                 "%s: no TLM for spec_set=%s — using %s TLM as fallback",
                 date, spec_set, tlm_spec,
@@ -798,8 +815,8 @@ def reduce_calib_date(date: str) -> None:
                            chkimg_dir / f"arc_{spec_set}_conv.png",
                            title=f"{date}  arc {spec_set} — isoplane convert")
 
-        # 2. make_im
-        _make_im_calib(conv_path, im_path)
+        # 2. make_im (arc: bias only, no cosmic-ray cleaning)
+        _make_im_calib(conv_path, im_path, arc=True)
         with fits.open(im_path) as h:
             save_chkimg_2d(h[0].data.astype(float),
                            chkimg_dir / f"arc_{spec_set}_im.png",
@@ -812,11 +829,12 @@ def reduce_calib_date(date: str) -> None:
             "OUTPUT_FILENAME": red_path.as_posix(),
             "TLMAP_FILENAME": tlm_path.as_posix(),
             "ARCDIR": ARC_TABLES_DIR.as_posix(),
-            "LAMPNAME": "HgArNeKrCd",
+            "LAMPNAME": arc_lampname(spec_set),
             "USE_GENCAL": True,
         }
         try:
-            reduce_arc(arc_args, get_diagnostic=True, diagnostic_dir=conv_dir/"diagnostic")
+            reduce_arc(arc_args, get_diagnostic=True,
+                       diagnostic_dir=conv_dir / "diagnostic" / spec_set)
             logger.info("%s: arc RED written: %s", date, red_path.name)
             calib_by_spec.setdefault(spec_set, {})["arc_red"] = red_path
             if red_path.exists():
@@ -984,7 +1002,7 @@ def reduce_date(date: str, force: bool = False) -> list[Path]:
         # --- Calibration file paths ---
         tlm_path = calib_dir / f"tlm_{spec_set}.fits"
         fflat_path = calib_dir / f"fflat_{spec_set}_red.fits"
-        arc_red_path = ARC_RED_LOOKUP.get(spec_set)
+        arc_red_path = find_arc_red(date, spec_set)
 
         if not tlm_path.exists():
             logger.warning(
@@ -1061,11 +1079,6 @@ def main() -> None:
     for date in DATES:
         logger.info("--- Date: %s ---", date)
         reduce_calib_date(date)
-
-    # Rebuild arc RED lookup so Phase 1 finds files generated by Phase 0.
-    global ARC_RED_LOOKUP
-    ARC_RED_LOOKUP = _build_global_arc_red_lookup()
-    logger.info("Arc RED lookup rebuilt: %d spec_set(s) found", len(ARC_RED_LOOKUP))
 
     logger.info("=== Phase 1: reduce_object ===")
     for date in DATES:
