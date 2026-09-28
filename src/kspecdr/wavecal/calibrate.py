@@ -291,6 +291,7 @@ def find_arc_line_matches(
         cen_axis,
         maxshift,
         diagnostic=diagnostic,
+        diagnostic_dir=diagnostic_dir,
     )
 
     # Interpolate shifted axis
