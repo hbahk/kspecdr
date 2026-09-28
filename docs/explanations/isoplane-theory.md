@@ -403,13 +403,21 @@ $$
 \Delta\lambda < 3\,\sigma_\lambda
 $$
 
-Robust residual rejection (only with more than four lines, as 2dfdr; the polynomial is then
-refitted and the reported residuals and RMS belong to that final fit):
+Robust residual rejection (`l1_outliers`, only with more than four lines, as 2dfdr): the
+residuals \(r_i\) of a least-absolute-deviation (L1) polynomial fit, which follows the majority
+of the lines rather than a few misidentified ones, and
 
 $$
-\left|r_i-\mathrm{median}(r)\right| \ge 3\cdot \mathrm{MAD}(r)
-\;\Rightarrow\; \text{outlier}
+|r_i| \ge 3\cdot \mathrm{median}_{j>p}\,|r|_{(j)}
+\;\text{and}\; |r_i| \ge 0.2\ \text{px}
+\;\Rightarrow\; \text{outlier},
 $$
+
+where the median leaves out the \(p\) = order + 1 smallest residuals (the L1 fit passes
+through \(p\) lines exactly; with few lines their zeros would make the median zero) and the
+0.2 px floor keeps lines that are good but fall in the tail of the centroid scatter (both
+differ from 2dfdr, which was designed for many lines). A least-squares polynomial is then
+fitted to the remaining lines; the reported residuals and RMS belong to that final fit.
 
 Prior-constrained fit (`WAVEFIT_METHOD='PRIOR'`): a line of wavelength \(\lambda_i\) is expected
 at the pixel \(u_i\) where the predicted axis reaches \(\lambda_i\) and is found at \(x_i\); a

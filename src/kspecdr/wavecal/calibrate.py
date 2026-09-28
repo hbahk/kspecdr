@@ -5,6 +5,7 @@ Main calibration routine.
 import numpy as np
 import logging
 from scipy.interpolate import interp1d
+from scipy.optimize import linprog
 from astropy.table import Table
 from pathlib import Path
 from typing import Optional, Tuple
@@ -420,15 +421,89 @@ def find_arc_line_matches(
     return pix_newv[valid], muv[valid], sig_newv[valid], mask2
 
 
+def l1_outliers(
+    x: np.ndarray,
+    y: np.ndarray,
+    order: int,
+    min_dev_pix: float = 0.2,
+    y_per_pix: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Lines that deviate from a least-absolute-deviation polynomial fit.
+
+    2dfdr CALIBRATE_SPECTRAL_AXES step 8: a robust cubic (``RBST_CUBEFIT2``, an L1 fit) is
+    fitted to the matched lines, and with more than four lines those with
+    ``|r| >= 3 median(|r|)`` are rejected. An L1 fit follows the majority of the lines, so a
+    few misidentified lines do not tilt it as they tilt a least-squares fit. It passes exactly
+    through at least ``order + 1`` lines; 2dfdr keeps their zero residuals in the median, which
+    with seven lines or fewer makes it zero and rejects all other lines, so here the median is
+    taken over the remaining residuals. The cut is also near two sigma of the centroid
+    scatter, which throws away good lines when there are few of them; lines within
+    ``min_dev_pix`` of the fit are kept (not in 2dfdr).
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Pixel positions and wavelengths of the matched lines.
+    order : int
+        Polynomial order.
+    min_dev_pix : float, optional
+        Deviation in pixels below which a line is never rejected.
+    y_per_pix : float, optional
+        Units of ``y`` per pixel for that conversion; by default the local slope of the fit
+        (``y`` wavelength, ``x`` pixel). Pass 1 when ``y`` is itself in pixels.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask of the rejected lines.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n, p = len(x), order + 1
+    outliers = np.zeros(n, dtype=bool)
+    if n <= max(4, p):
+        return outliers
+    # Scaled variables keep the linear programme well conditioned
+    x_scale = max(0.5 * np.ptp(x), 1.0)
+    y_scale = max(np.ptp(y), 1e-12)
+    t = (x - 0.5 * (x.max() + x.min())) / x_scale
+    b = (y - np.median(y)) / y_scale
+    a = np.vander(t, p)
+    # Minimise sum(u + v) subject to a c + u - v = b, u >= 0, v >= 0
+    res = linprog(
+        np.concatenate([np.zeros(p), np.ones(2 * n)]),
+        A_eq=np.hstack([a, np.eye(n), -np.eye(n)]),
+        b_eq=b,
+        bounds=[(None, None)] * p + [(0, None)] * (2 * n),
+        method="highs",
+    )
+    if not res.success:
+        logger.warning(f"L1 fit failed ({res.message}); no outlier rejection.")
+        return outliers
+    coef = res.x[:p]
+    resid = np.abs(a @ coef - b)
+    scale = np.median(np.sort(resid)[p:])
+    if scale > 0:
+        outliers = resid >= 3.0 * scale
+    if y_per_pix is None:  # local slope of the fit, in scaled y per pixel
+        slope = np.abs(np.polyval(np.polyder(coef), t)) / x_scale
+    else:
+        slope = abs(float(y_per_pix)) / y_scale
+    dev_pix = resid / np.where(slope > 0, slope, np.inf)
+    return outliers & (dev_pix >= min_dev_pix)
+
+
 def fit_calibration_model(
     x_pts: np.ndarray, y_pts: np.ndarray, poly_order: int = 3
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Fits a robust polynomial to the points, rejects outliers, and refits.
+    Fits a polynomial to the matched lines after rejecting outliers of a robust fit.
 
-    As 2dfdr CALIBRATE_SPECTRAL_AXES steps 8-9: outliers of a first robust fit are rejected
-    only when there are more than four points, and the returned residuals belong to the final
-    fit (so an RMS computed from them describes the solution that is used).
+    As 2dfdr CALIBRATE_SPECTRAL_AXES steps 8-9: lines that deviate from an L1 fit are
+    rejected (``l1_outliers``, only with more than four lines), then a least-squares
+    polynomial is fitted to the rest. The returned residuals belong to that final fit (so an
+    RMS computed from them describes the solution that is used).
 
     Returns:
         coeffs: Polynomial coefficients of the final fit
@@ -439,31 +514,15 @@ def fit_calibration_model(
         logger.warning(f"Not enough points for fit: {len(x_pts)}")
         return np.zeros(poly_order + 1), np.array([]), np.array([])
 
-    # Initial Fit
-    coeffs = robust_polyfit(x_pts, y_pts, poly_order)
-
-    # Residual Analysis & Outlier Rejection
-    y_fit = np.polyval(coeffs, x_pts)
-    residuals = y_fit - y_pts
-    med_res = np.median(residuals)
-    mad_res = np.median(np.abs(residuals - med_res))
-
-    outliers = np.zeros(len(x_pts), dtype=bool)
-    if len(x_pts) > 4:
-        outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
-
+    outliers = l1_outliers(x_pts, y_pts, poly_order)
+    if np.sum(~outliers) < poly_order + 1:
+        logger.warning("Too few points after outlier rejection; keeping all.")
+        outliers[:] = False
     if np.any(outliers):
         logger.info(f"Removing {np.sum(outliers)} outliers.")
-        x_clean = x_pts[~outliers]
-        y_clean = y_pts[~outliers]
 
-        if len(x_clean) < poly_order + 1:
-            logger.warning("Too few points after outlier rejection.")
-            return coeffs, residuals, outliers  # Return initial fit if too few
-
-        coeffs = robust_polyfit(x_clean, y_clean, poly_order)
-        residuals = np.polyval(coeffs, x_pts) - y_pts
-
+    coeffs = np.polyfit(x_pts[~outliers], y_pts[~outliers], poly_order)
+    residuals = np.polyval(coeffs, x_pts) - y_pts
     return coeffs, residuals, outliers
 
 
@@ -527,14 +586,10 @@ def fit_prior_correction(
         order = min(max_order, 0 if n < 3 else 1 if n < 6 else max_order)
         return np.polyfit((u[sel] - xc) / xc, d[sel], order), order
 
-    outliers = np.zeros(len(u), dtype=bool)
-    c, order = fit(~outliers)
-    if len(u) > 4:
-        r = d - np.polyval(c, (u - xc) / xc)
-        med = np.median(r)
-        outliers = np.abs(r - med) >= 3.0 * np.median(np.abs(r - med))
-        if np.any(outliers) and np.any(~outliers):
-            c, order = fit(~outliers)
+    c, order = fit(np.ones(len(u), dtype=bool))
+    outliers = l1_outliers((u - xc) / xc, d, order, y_per_pix=1.0)  # d is in pixels
+    if np.any(outliers) and np.any(~outliers):
+        c, order = fit(~outliers)
 
     # predicted axis on a fine grid, extrapolated linearly beyond the detector
     ug = np.linspace(-20.0, npix + 19.0, 8 * (npix + 40))
