@@ -252,13 +252,38 @@ $$
 
 ### 6.5 Predicted wavelength in TLM
 
-For spectral pixel center \(y\):
+By default (`WAVE_PREDICT='OPTICAL'`) the Isoplane prediction is an optical model, as 2dfdr
+`PREDICT_WAVELEN` does for AAOmega: the Czerny-Turner grating equation with a tilted detector.
+With groove spacing \(d = 1/L_{\mathrm{mm}}\), inclusion angle \(\gamma\), and grating angle
+\(\psi\) set by the central wavelength,
 
 $$
-\lambda_{\mathrm{pred}}(y) = \lambda_c + d_\lambda\,(y-y_{\mathrm{mid}})
+\sin\psi = \frac{m\,\lambda_c}{2\,d\cos(\gamma/2)}, \qquad
+\alpha = \psi - \frac{\gamma}{2}, \qquad \beta_0 = \psi + \frac{\gamma}{2},
 $$
 
-where \(d_\lambda = \mathrm{DISPERS}\), \(y_{\mathrm{mid}} = 0.5\,N_{\mathrm{spec}}\).
+a pixel at \(x\) mm from the optical axis (detector tilt \(\delta\), focal length \(f\)) sees
+
+$$
+\beta(x) = \beta_0 + \arctan\frac{x\cos\delta}{f + x\sin\delta}, \qquad
+\lambda_{\mathrm{pred}}(x) = \frac{d}{m}\left[\sin\alpha + \sin\beta(x)\right],
+$$
+
+with \(x = (y - (N_{\mathrm{spec}}-1)/2 - x_0)\,p_{\mathrm{mm}}\) for 0-based pixel \(y\). The
+constants in `kspecdr.inst.isoplane.ISOPLANE_OPTICS` (\(f = 329.68\) mm, \(\gamma = 18.306°\),
+\(\delta = 8.841°\), \(x_0 = -11.85\) px) come from a fit to identified lines of the
+commissioning arcs of all gratings, starting from the LightField calibration in the raw headers
+(328 mm, 17.8°, 8.46°). The prediction follows the dispersion curve of every grating to a
+fraction of a pixel over most of the detector; what remains is a shift of a few pixels from
+night to night, which the arc calibration absorbs. The earlier linear prediction
+(`WAVE_PREDICT='LINEAR'`),
+
+$$
+\lambda_{\mathrm{pred}}(y) = \lambda_c + d_\lambda\,(y + 0.5 - y_{\mathrm{mid}}),
+$$
+
+with \(d_\lambda = \mathrm{DISPERS}\) and \(y_{\mathrm{mid}} = 0.5\,N_{\mathrm{spec}}\), has a
+dispersion several percent off and misses the detector edges by tens of pixels.
 
 ### 6.6 Flow
 
@@ -315,17 +340,32 @@ where \(w_x \in [0,1]\) is the overlap fraction for pixel \(x\).
 
 ### 8.1 What is considered
 
-- The predicted wavelength from header is approximate.
+- The predicted wavelength is approximate (to a few pixels with the optical model).
 - Arc line matching needs robust handling of blends, saturation, and outliers.
 - Fiber-to-fiber distortion requires landmark synchronization.
+- The arc spectra move by several pixels between nights (all gratings together) but hardly
+  within a night: each night needs its own arcs.
+- Arc frames should be preprocessed with bias only: LACOSMIC clips the cores of the compact
+  150 g/mm lines, and an exposure-scaled master dark can drive the background negative, which
+  makes the template mask parts of the spectrum.
 
 ### 8.2 Strategy
 
 - Select a robust reference fiber near detector center.
 - Build a high-S/N template by fiber synchronization and averaging.
-- Read lamp line table (`*.arc`) and mask problematic blends.
-- Generate synthetic arc model and estimate shift field by cross-correlation.
-- Refine line centroids and fit global polynomial wavelength model robustly.
+- Read lamp line table (`*.arc`) and mask problematic blends. The commissioning arcs have the
+  Hg(Ar), Ne, Kr, and Cd pen-ray lamps on together; `data/arc_tables/HgArNeKrCd_<setup>.arc`
+  holds one list per setup (e.g. `HgArNeKrCd_600_450`): NIST air wavelengths, intensities
+  measured on that setup, blend components, and for 150 g/mm the second-order image of Hg 4358
+  at 8716.67 Å.
+- Generate synthetic arc model and estimate shift field by cross-correlation: a windowed
+  cross-correlogram (shift × pixel, up to `CRSCGMA_MS` pixels) and the quadratic shift path
+  through it with the largest summed correlation (cells ≥ 0.5), found by an exhaustive search
+  over all quadratics through three nodes as 2dfdr `CrossCorrGreedyQuadPathSearch`, so the
+  result is deterministic.
+- Refine line centroids and fit the wavelength model robustly: a global polynomial
+  (`WAVEFIT_METHOD='POLY'`, order `WAVEPOLY_ORDER`), or with fewer than four lines a
+  low-order pixel correction to the predicted axis (`WAVEFIT_METHOD='PRIOR'`, see below).
 - Propagate calibration to all fibers and write `WAVELA`/`SHIFTS`.
 
 ### 8.3 Key equations
@@ -363,12 +403,29 @@ $$
 \Delta\lambda < 3\,\sigma_\lambda
 $$
 
-Robust residual rejection:
+Robust residual rejection (only with more than four lines, as 2dfdr; the polynomial is then
+refitted and the reported residuals and RMS belong to that final fit):
 
 $$
 \left|r_i-\mathrm{median}(r)\right| \ge 3\cdot \mathrm{MAD}(r)
 \;\Rightarrow\; \text{outlier}
 $$
+
+Prior-constrained fit (`WAVEFIT_METHOD='PRIOR'`): a line of wavelength \(\lambda_i\) is expected
+at the pixel \(u_i\) where the predicted axis reaches \(\lambda_i\) and is found at \(x_i\); a
+correction polynomial \(\Delta(u)\) of order \(\le\) `WAVEFIT_PRIOR_ORDER` (default 2; order 0
+with fewer than 3 lines, 1 with fewer than 6) is fitted to \(x_i - u_i\), and the solution is
+\(\lambda(x) = \lambda_{\mathrm{pred}}(u)\) with \(x = u + \Delta(u)\). The prediction carries the
+shape of the dispersion curve, so even one or two lines give a solution, but it also carries the
+shape error of the optical model near the detector edges (about a pixel), where a cubic on
+five well-spread lines does better. Keep 'POLY' unless fewer than four lines are found; the
+blue 600 g/mm setups (about five usable lines per frame) calibrate with the cubic.
+
+Departure from the prediction: `reduce_arc` writes `WAVEDEV`, the largest
+\(|\lambda_{\mathrm{fit}} - \lambda_{\mathrm{pred}}|\) in pixels on the reference fibre, and warns above
+`WAVEDEV_WARN` (10 px). With the optical-model prediction a sound solution stays within a few
+pixels; larger values flag a polynomial running away where no line constrains it (a detector
+edge far from the outermost matched line).
 
 ### 8.4 Flow
 

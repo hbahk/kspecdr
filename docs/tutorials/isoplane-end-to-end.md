@@ -135,11 +135,15 @@ Isoplane tramline behavior in current code:
 - Peak search method defaults to wavelet mode.
 - Fiber matching is currently simple 1-to-1 (`match_fibers_isoplane`).
 - Missing fibers are interpolated/extrapolated.
-- Predicted `WAVELA` is written from `LAMBDAC` + `DISPERS`.
+- Predicted `WAVELA` comes from the Isoplane optical model (grating equation with the detector
+  geometry, `kspecdr.inst.isoplane`), good to a few pixels; `WAVE_PREDICT='LINEAR'` restores the
+  `LAMBDAC` + `DISPERS` prediction.
 
 ### Step 4. Preprocess and extract arc spectra
 
-Each arc frame should be converted, preprocessed, and extracted with the same TLM.
+Each arc frame should be converted, preprocessed, and extracted with the same TLM. Arcs need
+bias subtraction only: cosmic-ray cleaning (LACOSMIC) clips the cores of compact arc lines,
+and an exposure-scaled master dark can leave a negative background.
 
 ```python
 from kspecdr.preproc.make_im import make_im
@@ -150,8 +154,7 @@ arc_im = make_im(
     im_filename="work/hgar_001_im.fits",
     use_bias=True,
     bias_filename=master_bias,
-    use_dark=True,
-    dark_filename=master_dark,
+    cosmic_ray_method="NONE",
 )
 
 make_ex(
@@ -168,7 +171,12 @@ make_ex(
 ### Step 5. Calibrate wavelength from arcs
 
 Use `reduce_arc` for one lamp, or `reduce_arcs` for multi-lamp/global fitting.
-Arc line tables are read from `<ARCDIR>/<LAMPNAME>.arc` (for example `hgar.arc`, `ne.arc`, `kr.arc`, `cd.arc`).
+Arc line tables are read from `<ARCDIR>/<LAMPNAME>.arc` (for example `hgar.arc`, `ne.arc`, `kr.arc`, `cd.arc`
+for single lamps). Arcs with all four lamps on, as in the 2026 commissioning, use the per-setup
+lists `HgArNeKrCd_<grooves>_<central nm>` (e.g. `HgArNeKrCd_600_450`). Use arcs from the same
+night as the science frames: the spectra move by several pixels between nights. Check the
+`WAVEDEV` header keyword of the arc RED: more than ~10 px means the fit runs away somewhere
+(usually a detector edge with no matched line).
 
 ```python
 from pathlib import Path
@@ -195,7 +203,7 @@ What `reduce_arc` currently does:
 - Ensures IM and EX exist (creates if missing).
 - Copies EX to RED.
 - Runs generic calibration for Isoplane (`INST_ISOPLANE` path).
-- Chooses a reference fiber, builds landmark shifts, cross-correlates against lamp tables, fits a robust polynomial model, propagates to all fibers.
+- Chooses a reference fiber, builds landmark shifts, cross-correlates against lamp tables, fits a robust polynomial model (or, with `WAVEFIT_METHOD='PRIOR'`, a low-order correction to the predicted axis), propagates to all fibers.
 - Writes calibrated `WAVELA` and `SHIFTS`.
 
 ### Step 6. Preprocess and extract science/object data
