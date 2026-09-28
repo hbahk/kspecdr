@@ -68,9 +68,60 @@ def _write_resolution_header(red_file: "ImageFile", resolution_info: dict) -> No
     )
 
 
+def _check_against_prediction(red_file: "ImageFile", solution: np.ndarray, prediction: np.ndarray,
+                              args: Dict[str, Any]) -> None:
+    """
+    Record how far the solution departs from the predicted axis (reference fibre).
+
+    A polynomial fitted to few lines can run away where no line constrains it (detector edges);
+    with the Isoplane optical-model prediction a good solution stays within a few pixels of it
+    (night-to-night shifts included). Writes ``WAVEDEV`` (maximum departure, pixels) and
+    ``WAVEDEVX`` (pixel where it occurs) and warns above ``WAVEDEV_WARN`` (default 10 px).
+    """
+    disp = np.abs(np.gradient(solution))
+    dev = np.abs(solution - prediction) / np.where(disp > 0, disp, np.nan)
+    if not np.any(np.isfinite(dev)):
+        return
+    i = int(np.nanargmax(dev))
+    hdr = red_file.hdul[0].header
+    hdr["WAVEDEV"] = (round(float(dev[i]), 2), "Max |solution - predicted| wavelength (pixels)")
+    hdr["WAVEDEVX"] = (i, "Pixel of WAVEDEV")
+    limit = float(args.get("WAVEDEV_WARN", 10.0))
+    if dev[i] > limit:
+        logger.warning(
+            f"Wavelength solution departs from the prediction by {dev[i]:.1f} px at pixel {i}: "
+            "the fit may be unconstrained there (few arc lines near that end)."
+        )
+
+
 def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, diagnostic_dir: Optional[Path] = None) -> None:
     """
     Reduces a raw arc file to produce im(age), ex(tracted) and red(uced) arc files.
+
+    Parameters
+    ----------
+    args : dict
+        Method arguments:
+        - 'RAW_FILENAME', 'IMAGE_FILENAME', 'EXTRAC_FILENAME', 'OUTPUT_FILENAME',
+          'TLMAP_FILENAME': input and product files; missing IM/EX files are made.
+        - 'ARCDIR', 'LAMPNAME': the line list ``<ARCDIR>/<LAMPNAME>.arc`` (LAMPNAME defaults
+          to the header keyword). For the Isoplane there is one list per setup,
+          ``HgArNeKrCd_<grooves>_<central nm>`` (e.g. ``HgArNeKrCd_600_450``).
+        - 'USE_GENCAL': use the generic calibration for any instrument.
+        - 'CRSCGMA_MS': maximum cross-correlation shift (pixels, default 70).
+        - 'USE_BLENDS': keep lines closer than 3 sigma to a neighbour (default False).
+        - 'WAVEFIT_METHOD': 'POLY' (default) fits a global polynomial of 'WAVEPOLY_ORDER'
+          (default 3); 'PRIOR' fits a pixel correction of order <= 'WAVEFIT_PRIOR_ORDER'
+          (default 2) to the predicted wavelength axis (``WAVELA`` of the extracted frame).
+          PRIOR inherits the shape error of the prediction near the detector edges (a pixel
+          or so for the Isoplane optical model), where a cubic on five well-spread lines does
+          better, so use it only when fewer than four lines are found.
+        - 'WAVEDEV_WARN': warn when the solution departs from the prediction by more than
+          this many pixels (default 10; the departure is written to ``WAVEDEV``).
+    get_diagnostic : bool, optional
+        Write diagnostic tables to ``diagnostic_dir``.
+    diagnostic_dir : Path, optional
+        Directory for the diagnostic tables.
     """
 
     # 1. Initialize
@@ -126,14 +177,16 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
             spectra = red_file.read_image_data().T
             variance = red_file.read_variance_data().T
 
+            ref_fib = nf // 2
             try:
                 wave_hdu = red_file.hdul["WAVELA"]
                 wave_data = wave_hdu.data.T
-                ref_fib = nf // 2
                 xptr = wave_data[:, ref_fib]
+                predicted = True
             except KeyError:
                 logger.warning("WAVELA extension not found. Using indices.")
                 xptr = np.arange(nx, dtype=float)
+                predicted = False
 
             wave_axis = np.zeros(nx + 1)
             wave_axis[1:nx] = 0.5 * (xptr[:-1] + xptr[1:])
@@ -171,6 +224,8 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
 
             use_blends = args.get("USE_BLENDS", False)
             poly_order = int(args.get("WAVEPOLY_ORDER", 3))
+            fit_method = str(args.get("WAVEFIT_METHOD", "POLY")).upper()
+            prior_order = int(args.get("WAVEFIT_PRIOR_ORDER", 2))
 
             pixcal_dp, status, resolution_info = calibrate_spectral_axes(
                 nx,
@@ -187,6 +242,8 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
                 diagnostic_dir=diagnostic_dir,
                 use_blends=use_blends,
                 poly_order=poly_order,
+                fit_method=fit_method,
+                prior_order=prior_order,
             )
 
             if status == 0:
@@ -196,6 +253,8 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
                 shifts[:, 1] = 1.0
                 red_file.write_shifts_data(shifts)
                 _write_resolution_header(red_file, resolution_info)
+                if predicted:
+                    _check_against_prediction(red_file, new_wave[:, ref_fib], xptr, args)
                 logger.info("Wavelength calibration completed successfully.")
 
         else:

@@ -423,12 +423,16 @@ def fit_calibration_model(
     x_pts: np.ndarray, y_pts: np.ndarray, poly_order: int = 3
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Fits a robust polynomial to the points.
+    Fits a robust polynomial to the points, rejects outliers, and refits.
+
+    As 2dfdr CALIBRATE_SPECTRAL_AXES steps 8-9: outliers of a first robust fit are rejected
+    only when there are more than four points, and the returned residuals belong to the final
+    fit (so an RMS computed from them describes the solution that is used).
 
     Returns:
-        coeffs: Polynomial coefficients
-        residuals: Residuals of the fit
-        outliers: Boolean mask of outliers
+        coeffs: Polynomial coefficients of the final fit
+        residuals: Residuals of the final fit (fit - true), for all points
+        outliers: Boolean mask of the points rejected before the final fit
     """
     if len(x_pts) < poly_order + 1:
         logger.warning(f"Not enough points for fit: {len(x_pts)}")
@@ -443,7 +447,9 @@ def fit_calibration_model(
     med_res = np.median(residuals)
     mad_res = np.median(np.abs(residuals - med_res))
 
-    outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
+    outliers = np.zeros(len(x_pts), dtype=bool)
+    if len(x_pts) > 4:
+        outliers = np.abs(residuals - med_res) >= 3.0 * mad_res
 
     if np.any(outliers):
         logger.info(f"Removing {np.sum(outliers)} outliers.")
@@ -455,8 +461,115 @@ def fit_calibration_model(
             return coeffs, residuals, outliers  # Return initial fit if too few
 
         coeffs = robust_polyfit(x_clean, y_clean, poly_order)
+        residuals = np.polyval(coeffs, x_pts) - y_pts
 
     return coeffs, residuals, outliers
+
+
+def fit_prior_correction(
+    x_pts: np.ndarray,
+    y_pts: np.ndarray,
+    cen_axis: np.ndarray,
+    max_order: int = 2,
+    n_equiv: int = 5,
+):
+    """
+    Fit a low-order pixel correction to the predicted wavelength axis.
+
+    ``WAVEFIT_METHOD='PRIOR'``: a line of wavelength ``y`` is expected at the pixel ``u`` where
+    the predicted axis reaches ``y`` and is found at ``x = u + dx(u)``; ``dx`` is a polynomial of
+    order <= ``max_order`` (0 with fewer than 3 lines, 1 with fewer than 6). The prediction
+    carries the shape of the dispersion curve, so even one or two lines give a solution; its
+    accuracy is that of the prediction's shape (the Isoplane optical model is off by a pixel or
+    so near the detector edges, so a cubic is better once four or more well-spread lines are
+    found).
+    Outliers are rejected as in ``fit_calibration_model``.
+
+    Parameters
+    ----------
+    x_pts, y_pts : np.ndarray
+        Measured pixel positions and true wavelengths of the matched lines.
+    cen_axis : np.ndarray
+        Predicted wavelength at the pixel centres 0 .. npix-1.
+    max_order : int, optional
+        Highest order of ``dx``.
+    n_equiv : int, optional
+        Degree of the polynomial that approximates the solution (for diagnostics and
+        ``compute_resolution_stats``).
+
+    Returns
+    -------
+    wave_at : callable
+        Pixel position -> wavelength.
+    coeffs : np.ndarray
+        Degree-``n_equiv`` polynomial (``np.polyval`` order) close to ``wave_at`` at the pixel
+        centres.
+    residuals : np.ndarray
+        Fit minus true wavelength at the lines.
+    outliers : np.ndarray
+        Lines rejected before the final fit.
+    order : int
+        Order of ``dx`` used.
+    """
+    npix = cen_axis.size
+    pix = np.arange(npix, dtype=float)
+    xc = 0.5 * (npix - 1)
+    ascending = cen_axis[-1] > cen_axis[0]
+    if ascending:
+        u = np.interp(y_pts, cen_axis, pix)
+    else:
+        u = np.interp(y_pts, cen_axis[::-1], pix[::-1])
+    d = np.asarray(x_pts, dtype=float) - u
+
+    def fit(sel):
+        n = int(sel.sum())
+        order = min(max_order, 0 if n < 3 else 1 if n < 6 else max_order)
+        return np.polyfit((u[sel] - xc) / xc, d[sel], order), order
+
+    outliers = np.zeros(len(u), dtype=bool)
+    c, order = fit(~outliers)
+    if len(u) > 4:
+        r = d - np.polyval(c, (u - xc) / xc)
+        med = np.median(r)
+        outliers = np.abs(r - med) >= 3.0 * np.median(np.abs(r - med))
+        if np.any(outliers) and np.any(~outliers):
+            c, order = fit(~outliers)
+
+    # predicted axis on a fine grid, extrapolated linearly beyond the detector
+    ug = np.linspace(-20.0, npix + 19.0, 8 * (npix + 40))
+    lam_g = np.interp(ug, pix, cen_axis)
+    lo, hi = ug < 0, ug > npix - 1
+    lam_g[lo] = cen_axis[0] + ug[lo] * (cen_axis[1] - cen_axis[0])
+    lam_g[hi] = cen_axis[-1] + (ug[hi] - (npix - 1)) * (cen_axis[-1] - cen_axis[-2])
+    x_g = ug + np.polyval(c, (ug - xc) / xc)
+
+    def wave_at(x):
+        return np.interp(np.asarray(x, dtype=float), x_g, lam_g)
+
+    residuals = wave_at(x_pts) - np.asarray(y_pts, dtype=float)
+    coeffs = np.polyfit(pix, wave_at(pix), n_equiv)
+    return wave_at, coeffs, residuals, outliers, order
+
+
+def apply_calibration_axis(
+    cal_axis: np.ndarray,
+    npix: int,
+    nfib: int,
+    goodfib: np.ndarray,
+    ref_fib: int,
+    lmr: np.ndarray,
+    nlm: int,
+) -> np.ndarray:
+    """
+    Propagates the reference-fibre wavelengths at the pixel edges (NPIX+1) to all fibres
+    using landmark shifts. Returns pixcal_dp (NPIX+1, NFIB).
+    """
+    # 9. Synchronise Calibration
+    synchcal_axes = synchronise_calibration_last(
+        cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm
+    )
+
+    return synchcal_axes.T
 
 
 def apply_calibration_model(
@@ -474,13 +587,7 @@ def apply_calibration_model(
     """
     pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
     cal_axis = np.polyval(coeffs, pixel_edges)
-
-    # 9. Synchronise Calibration
-    synchcal_axes = synchronise_calibration_last(
-        cal_axis, npix, nfib, ~goodfib, ref_fib, lmr, nlm
-    )
-
-    return synchcal_axes.T
+    return apply_calibration_axis(cal_axis, npix, nfib, goodfib, ref_fib, lmr, nlm)
 
 
 FWHM_FACTOR = 2.0 * np.sqrt(2.0 * np.log(2.0))  # 2.3548
@@ -583,6 +690,8 @@ def calibrate_spectral_axes(
     diagnostic_dir: Optional[Path] = None,
     use_blends: bool = False,
     poly_order: int = 3,
+    fit_method: str = "POLY",
+    prior_order: int = 2,
 ) -> tuple[np.ndarray, int, dict]:
     """
     Calibrate the pixels of extracted arclamp spectra.
@@ -597,6 +706,15 @@ def calibrate_spectral_axes(
         can be individually measured will contribute to the solution.  This is
         useful in spectral regions where lines are densely packed.  Default is
         False (blended lines are excluded as before).
+    poly_order : int, optional
+        Order of the global polynomial (``fit_method='POLY'``).
+    fit_method : str, optional
+        'POLY' (default): polynomial of ``poly_order`` in pixel, as 2dfdr.
+        'PRIOR': low-order pixel correction to the predicted axis ``pred_axis``
+        (``fit_prior_correction``); for frames with fewer than four usable lines, where a
+        cubic is not constrained.
+    prior_order : int, optional
+        Highest order of the pixel correction with ``fit_method='PRIOR'``.
 
     Returns
     -------
@@ -691,17 +809,29 @@ def calibrate_spectral_axes(
     )
 
     logger.info(f"Valid points: {len(x_pts)}")
-    if len(x_pts) < poly_order + 1:
+    fit_method = str(fit_method).upper()
+    min_points = 2 if fit_method == "PRIOR" else poly_order + 1
+    if len(x_pts) < min_points:
         logger.warning(
-            f"Not enough valid points for polynomial fit (order={poly_order}) - "
-            f"{len(x_pts)} points."
+            f"Not enough valid points for the {fit_method} fit - {len(x_pts)} points."
         )
         return np.zeros((npix + 1, nfib)), -1, {}
 
     # Fit Model
-    coeffs, residuals, outliers = fit_calibration_model(
-        x_pts, y_pts, poly_order=poly_order
-    )
+    pixel_edges = np.arange(npix + 1, dtype=float) - 0.5
+    if fit_method == "PRIOR":
+        wave_at, coeffs, residuals, outliers, order = fit_prior_correction(
+            x_pts, y_pts, cen_axis, max_order=prior_order
+        )
+        cal_axis = wave_at(pixel_edges)
+        cal_centers = wave_at(np.arange(npix, dtype=float))
+        logger.info(f"PRIOR fit: order-{order} pixel correction to the predicted axis")
+    else:
+        coeffs, residuals, outliers = fit_calibration_model(
+            x_pts, y_pts, poly_order=poly_order
+        )
+        cal_axis = np.polyval(coeffs, pixel_edges)
+        cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
 
     # Calculate stats for logging
     if len(residuals) > 0:
@@ -723,7 +853,6 @@ def calibrate_spectral_axes(
                 diagnostic_dir.mkdir(parents=True, exist_ok=True)
         else:
             diagnostic_dir = Path(".")
-        cal_centers = np.polyval(coeffs, np.arange(npix, dtype=float))
         np.savetxt(
             diagnostic_dir / "CALIBRATED_SPECTRA.dat",
             np.column_stack((cal_centers, template_spectra)),
@@ -781,6 +910,6 @@ def calibrate_spectral_axes(
         )
 
     # Apply Calibration
-    pixcal_dp = apply_calibration_model(coeffs, npix, nfib, goodfib, ref_fib, lmr, nlm)
+    pixcal_dp = apply_calibration_axis(cal_axis, npix, nfib, goodfib, ref_fib, lmr, nlm)
 
     return pixcal_dp, 0, resolution_info
