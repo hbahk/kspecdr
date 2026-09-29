@@ -5,7 +5,7 @@ Phase 0 — calibration (always regenerated):
     For each calib directory: convert Flat_*/Arc_* raw frames to isoplane
     format, run make_im, make_tlm (from flats) and reduce_arc (wavelength
     calibration). Check images are saved under calib/chkimg/. Arcs get no dark
-    and no cosmic-ray cleaning, per-setup line lists, and the optical-model
+    and no cosmic-ray cleaning, their grating's line list, and the optical-model
     prediction; object frames use the arc of their own night.
 
 Phase 1 — object frames:
@@ -148,16 +148,16 @@ DATE_CONFIG = {
 
 # Arc wavelength calibration. The arc spectra move by several pixels between nights (all
 # gratings together) but hardly within a night, so each night uses its own arcs;
-# another night's arc is a logged fallback only. Line lists are per setup
-# (data/arc_tables/HgArNeKrCd_<spec_set>.arc). reduce_arc writes WAVEDEV (max departure of
+# another night's arc is a logged fallback only. Line lists are per grating
+# (data/arc_tables/HgArNeKrCd_<grooves>.arc). reduce_arc writes WAVEDEV (max departure of
 # the solution from the optical-model prediction, px) and warns above 10 px: a cubic on few
 # lines can run away near the detector edges.
 ARC_LAMP_V1 = "HgArNeKrCd"
 
 
 def arc_lampname(spec_set: str) -> str:
-    """Per-setup arc line list if there is one, else the combined v1 list."""
-    name = f"{ARC_LAMP_V1}_{spec_set}"
+    """The grating's arc line list if there is one, else the combined v1 list."""
+    name = f"{ARC_LAMP_V1}_{spec_set.split('_')[0]}"
     return name if (ARC_TABLES_DIR / f"{name}.arc").exists() else ARC_LAMP_V1
 
 

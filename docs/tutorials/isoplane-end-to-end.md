@@ -172,8 +172,8 @@ make_ex(
 
 Use `reduce_arc` for one lamp, or `reduce_arcs` for multi-lamp/global fitting.
 Arc line tables are read from `<ARCDIR>/<LAMPNAME>.arc` (for example `hgar.arc`, `ne.arc`, `kr.arc`, `cd.arc`
-for single lamps). Arcs with all four lamps on, as in the 2026 commissioning, use the per-setup
-lists `HgArNeKrCd_<grooves>_<central nm>` (e.g. `HgArNeKrCd_600_450`). Use arcs from the same
+for single lamps). Arcs with all four lamps on, as in the 2026 commissioning, use the list of
+their grating, `HgArNeKrCd_<grooves>` (`HgArNeKrCd_150`, `_300`, `_600`). Use arcs from the same
 night as the science frames: the spectra move by several pixels between nights. Check the
 `WAVEDEV` header keyword of the arc RED: more than ~10 px means the fit runs away somewhere
 (usually a detector edge with no matched line).

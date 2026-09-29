@@ -105,8 +105,8 @@ def reduce_arc(args: Dict[str, Any], get_diagnostic: Optional[bool] = False, dia
         - 'RAW_FILENAME', 'IMAGE_FILENAME', 'EXTRAC_FILENAME', 'OUTPUT_FILENAME',
           'TLMAP_FILENAME': input and product files; missing IM/EX files are made.
         - 'ARCDIR', 'LAMPNAME': the line list ``<ARCDIR>/<LAMPNAME>.arc`` (LAMPNAME defaults
-          to the header keyword). For the Isoplane there is one list per setup,
-          ``HgArNeKrCd_<grooves>_<central nm>`` (e.g. ``HgArNeKrCd_600_450``).
+          to the header keyword). For the Isoplane there is one list per grating,
+          ``HgArNeKrCd_<grooves>`` (e.g. ``HgArNeKrCd_600``).
         - 'USE_GENCAL': use the generic calibration for any instrument.
         - 'CRSCGMA_MS': maximum cross-correlation shift (pixels, default 70).
         - 'USE_BLENDS': keep lines closer than 3 sigma to a neighbour (default False).

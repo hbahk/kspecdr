@@ -354,10 +354,14 @@ where \(w_x \in [0,1]\) is the overlap fraction for pixel \(x\).
 - Select a robust reference fiber near detector center.
 - Build a high-S/N template by fiber synchronization and averaging.
 - Read lamp line table (`*.arc`) and mask problematic blends. The commissioning arcs have the
-  Hg(Ar), Ne, Kr, and Cd pen-ray lamps on together; `data/arc_tables/HgArNeKrCd_<setup>.arc`
-  holds one list per setup (e.g. `HgArNeKrCd_600_450`): NIST air wavelengths, intensities
-  measured on that setup, blend components, and for 150 g/mm the second-order image of Hg 4358
-  at 8716.67 Å.
+  Hg(Ar), Ne, Kr, and Cd pen-ray lamps on together; `data/arc_tables/HgArNeKrCd_<grooves>.arc`
+  holds one list per grating (`HgArNeKrCd_150`, `_300`, `_600`): NIST air wavelengths,
+  intensities measured on the commissioning arcs, blend components, and for 150 g/mm the
+  second-order image of Hg 4358 at 8716.67 Å. The lists differ by grating because blending
+  depends on the resolution: a line that is a blend component at 150 g/mm can be a faint
+  separate line next to a bright one at 600 g/mm, which the matching would then mistake for its
+  neighbour. Any central wavelength of a grating uses its list, within the range the list
+  covers.
 - Generate synthetic arc model and estimate shift field by cross-correlation: a windowed
   cross-correlogram (shift × pixel, up to `CRSCGMA_MS` pixels) and the quadratic shift path
   through it with the largest summed correlation (cells ≥ 0.5), found by an exhaustive search
