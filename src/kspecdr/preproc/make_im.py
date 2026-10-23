@@ -33,6 +33,7 @@ except ImportError:
     logger.warning("astroscrappy not available. Cosmic ray removal will not work.")
 
 from ..io.image import ImageFile
+from ..utils.section import parse_fits_section
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,9 @@ class MakeIM:
         cosmic_ray_method : str, optional
             Method for cosmic ray removal ('NONE', 'LACOSMIC', 'BCLEAN', 'PYCOSMIC')
         **kwargs
-            Additional keyword arguments
+            Additional keyword arguments, e.g. ``overscan_region``: ``(x1, x2, y1, y2)``
+            with the overscan at ``image_data[x1:x2, y1:y2]``, used with ``use_bias``.
+            Without it, the frame's ``BIASSEC`` (if any) gives the region.
 
         Returns
         -------
@@ -336,8 +339,11 @@ class MakeIM:
         image_data = im_file.read_image_data()
         nx, ny = im_file.get_size()
 
-        # Optional overscan region (in image_data coordinates: (x1, x2, y1, y2))
+        # Optional overscan region (in image_data coordinates: (x1, x2, y1, y2)); without one,
+        # the frame's BIASSEC
         overscan_region = kwargs.get("overscan_region", None)
+        if overscan_region is None:
+            overscan_region = self._overscan_region_from_header(im_file)
 
         if use_bias:
             # Subtract bias frame if provided
@@ -390,6 +396,7 @@ class MakeIM:
                     logger.info(f"Subtracted bias level: {bias_record:.2f}")
                 else:
                     logger.warning("No overscan region found in header")
+                    bias_record = 0.0
 
             # Write back the processed image data
             im_file.write_image_data(image_data)
@@ -398,6 +405,36 @@ class MakeIM:
             logger.info("No bias subtraction performed")
             bias_record = 0.0
             im_file.add_history("No bias subtraction performed")
+
+    def _overscan_region_from_header(
+        self, im_file: ImageFile
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Overscan region from the ``BIASSEC`` keyword of the frame.
+
+        Parameters
+        ----------
+        im_file : ImageFile
+            The image file being processed.
+
+        Returns
+        -------
+        tuple of int or None
+            ``(x1, x2, y1, y2)`` such that the overscan is ``image_data[x1:x2, y1:y2]``, or
+            None if the frame has no (usable) ``BIASSEC``.
+        """
+        biassec = im_file.get_header_value("BIASSEC", None)
+        if biassec is None:
+            return None
+        try:
+            region = parse_fits_section(biassec)
+        except ValueError as e:
+            logger.warning("Ignoring BIASSEC: %s", e)
+            return None
+        logger.info(
+            "Overscan region from BIASSEC %s: rows %d:%d, cols %d:%d", biassec, *region
+        )
+        return region
 
     def _calculate_bias_level(
         self, image_data: np.ndarray, overscan_region: Tuple[int, int, int, int]
@@ -1289,7 +1326,9 @@ def make_im(
     verbose : bool, optional
         Whether to print verbose output
     **kwargs
-        Additional keyword arguments
+        Additional keyword arguments, e.g. ``overscan_region``: ``(x1, x2, y1, y2)``
+        with the overscan at ``image_data[x1:x2, y1:y2]``, used with ``use_bias``.
+        Without it, the frame's ``BIASSEC`` (if any) gives the region.
 
     Returns
     -------

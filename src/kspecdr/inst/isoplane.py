@@ -15,7 +15,13 @@ from astropy.table import Table
 import numpy as np
 import re
 
+from ..utils.section import flip_region, format_fits_section, parse_fits_section
+
 logger = logging.getLogger(__name__)
+
+# Raw-orientation sections written by the ICS IsoPlane server, kept under these keywords until
+# write_isoplane_converted_image maps them into BIASSEC / DATASEC of the converted frame.
+RAW_SECTION_KEYS = {"BIASSEC": "RBIASSEC", "DATASEC": "RDATASEC"}
 
 # Optical model of the Isoplane SCT-320 + PIXIS 1300BX used for K-SPEC commissioning: the
 # Czerny-Turner grating equation with a tilted detector, as 2dfdr PREDICT_WAVELEN (WLA_6DF,
@@ -452,7 +458,19 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     i_ori_result_vertical = -1 if "FlippedVertically" in ori_result else 1
     flip_vertical = i_ori_uncorr_vertical * i_ori_result_vertical
     new_header["FLIPVERT"] = (flip_vertical, "Flip vertical orientation")
-    
+
+    # Overscan and data sections (ICS, raw orientation). Kept as RBIASSEC / RDATASEC so that
+    # BIASSEC / DATASEC always refer to the frame they sit in; write_isoplane_converted_image
+    # maps them through the flips. Frames without them (LightField alone) have no overscan
+    # information and the caller supplies ``overscan_region`` to make_im.
+    for key, raw_key in RAW_SECTION_KEYS.items():
+        if key in new_header:
+            new_header[raw_key] = (
+                str(new_header[key]).strip(),
+                f"Raw {key} (before FLIPHORI/FLIPVERT)",
+            )
+            del new_header[key]
+
     # 6. Grating Info
     # HIERARCH PI SPECTROMETER GRATING SELECTED = '[500nm,150][2][0]'
     # Need to parse: 150 lines/mm, 500nm center?
@@ -516,6 +534,68 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     return new_header
 
 
+def _orient_isoplane_frame(data: np.ndarray, hdr: fits.Header) -> np.ndarray:
+    """
+    Apply the FLIPHORI / FLIPVERT re-orientation to a 2-D raw frame.
+
+    The raw sections ``RBIASSEC`` / ``RDATASEC`` (from `convert_isoplane_header`) are mapped
+    through the same flips and written as ``BIASSEC`` / ``DATASEC`` of the converted frame.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Raw frame, shape ``(rows, cols)``.
+    hdr : fits.Header
+        Converted header; updated in place (flip flags set to -1, sections added).
+
+    Returns
+    -------
+    np.ndarray
+        The re-oriented frame.
+    """
+    flip_cols = hdr["FLIPHORI"] > 0
+    flip_rows = hdr["FLIPVERT"] > 0
+
+    if flip_cols:
+        data = np.flip(data, axis=1)
+        hdr["FLIPHORI"] = -1
+        logger.info("Flipped horizontal orientation")
+
+    if flip_rows:
+        data = np.flip(data, axis=0)
+        hdr["FLIPVERT"] = -1
+        logger.info("Flipped vertical orientation")
+
+    for key, raw_key in RAW_SECTION_KEYS.items():
+        if raw_key not in hdr:
+            continue
+        try:
+            region = parse_fits_section(hdr[raw_key])
+        except ValueError as e:
+            logger.warning("Ignoring %s: %s", raw_key, e)
+            continue
+        if region[1] > data.shape[0] or region[3] > data.shape[1]:
+            logger.warning(
+                "Ignoring %s = %s: outside the %d x %d frame",
+                raw_key,
+                hdr[raw_key],
+                data.shape[1],
+                data.shape[0],
+            )
+            continue
+        region = flip_region(region, data.shape, flip_rows, flip_cols)
+        hdr[key] = (format_fits_section(region), f"{key} of the converted frame")
+        logger.info(
+            "%s %s -> %s (rows %d:%d, cols %d:%d)",
+            raw_key,
+            hdr[raw_key],
+            hdr[key],
+            *region,
+        )
+
+    return data
+
+
 def write_isoplane_converted_image(
     fpath: str,
     output_fpath: str,
@@ -529,7 +609,9 @@ def write_isoplane_converted_image(
 
     This reads the input header, applies standard keyword conversions, attaches
     a fiber table, normalizes the data to a single 2D frame, applies requested
-    orientation flips, and writes the result to a new FITS file.
+    orientation flips, and writes the result to a new FITS file. Raw ``BIASSEC`` /
+    ``DATASEC`` (written by the ICS) are mapped through the flips into ``BIASSEC`` /
+    ``DATASEC`` of the converted frame, where make_im takes the overscan region from.
 
     Parameters
     ----------
@@ -577,16 +659,7 @@ def write_isoplane_converted_image(
                         if "NAXIS3" in frame_hdr:
                             frame_hdr.remove("NAXIS3")
 
-                        frame_data = frame
-                        if frame_hdr["FLIPHORI"] > 0:
-                            frame_data = np.flip(frame_data, axis=1)
-                            frame_hdr["FLIPHORI"] = -1
-                            logger.info("Flipped horizontal orientation")
-
-                        if frame_hdr["FLIPVERT"] > 0:
-                            frame_data = np.flip(frame_data, axis=0)
-                            frame_hdr["FLIPVERT"] = -1
-                            logger.info("Flipped vertical orientation")
+                        frame_data = _orient_isoplane_frame(frame, frame_hdr)
 
                         frame_hdul = fits.HDUList([hdu.copy() for hdu in hdul])
                         frame_hdul[0].data = frame_data
@@ -614,16 +687,7 @@ def write_isoplane_converted_image(
         else:
             raise ValueError(f"Input data has {hdul[0].data.ndim} dimensions. Expected 2 or 3.")
         
-        if new_hdr["FLIPHORI"] > 0:
-            hdul[0].data = np.flip(hdul[0].data, axis=1)
-            new_hdr["FLIPHORI"] = -1
-            logger.info("Flipped horizontal orientation")
-            
-        if new_hdr["FLIPVERT"] > 0:
-            hdul[0].data = np.flip(hdul[0].data, axis=0)
-            new_hdr["FLIPVERT"] = -1
-            logger.info("Flipped vertical orientation")
-            
+        hdul[0].data = _orient_isoplane_frame(hdul[0].data, new_hdr)
         hdul[0].header = new_hdr
 
         hdul.writeto(output_fpath, overwrite=True)
