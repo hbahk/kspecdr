@@ -18,6 +18,7 @@ Usage example::
 
 import numpy as np
 from astropy.io import fits
+from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 import logging
 import sys
@@ -170,6 +171,10 @@ class ImageFile:
         """
         Save the image file to a new filename.
 
+        If ``filename`` is the file opened in UPDATE mode, the changes are flushed to it in
+        place: ``writeto(overwrite=True)`` would remove the open file first, which Windows
+        refuses (WinError 32).
+
         Parameters
         ----------
         filename : str
@@ -177,6 +182,13 @@ class ImageFile:
         """
         if self.hdul is None:
             raise RuntimeError("File not opened")
+
+        if (
+            Path(filename).resolve() == Path(self.filename).resolve()
+            and self.hdul.fileinfo(0)["filemode"] == "update"
+        ):
+            self.hdul.flush()
+            return
 
         # Write to new file
         self.hdul.writeto(filename, overwrite=True)
