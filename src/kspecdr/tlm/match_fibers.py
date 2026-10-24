@@ -8,7 +8,7 @@ for various instruments (TAIPAN, ISOPLANE).
 import numpy as np
 import logging
 from scipy.optimize import linear_sum_assignment
-from typing import Tuple, List, Optional
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -245,42 +245,217 @@ def match_fibers_taipan(
 
     return match_vector, modelled_posn
 
-def match_fibers_isoplane(
-    nf: int,
-    pk_posn: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Simple 1-to-1 fiber matching for ISOPLANE.
+ISOPLANE_FIB_PITCH = 12.0  # px; January 2026 14-fibre slit (TLM 20260128, 12.0 +- 0.2 px)
 
-    Traces are assumed ordered by increasing y (trace 1 = lowest y). Fiber
-    table row 1 corresponds to highest y, so mapping is reversed: fiber 0
-    is assigned the last (highest-y) trace, fiber 1 the second-to-last, etc.
+
+def isoplane_nominal_fibpos(
+    nf: int,
+    pitch: float = ISOPLANE_FIB_PITCH,
+    gaps: Optional[Union[Dict[int, float], Sequence[Tuple[int, float]]]] = None,
+    positions: Optional[Sequence[float]] = None,
+) -> np.ndarray:
+    """
+    Nominal slit offsets of the ISOPLANE fibres.
+
+    Offsets are measured along the slit from fibre 1 (the highest-y trace) towards lower y, in
+    detector pixels, so fibre ``i`` is expected at ``y = y0 - scale * offset[i]``.
 
     Parameters
     ----------
     nf : int
-        Number of fibers
-    pk_posn : np.ndarray
-        Detected peak positions (ordered by increasing y)
+        Number of fibres (rows of the fibre table).
+    pitch : float, optional
+        Nominal spacing between neighbouring fibres in pixels.
+    gaps : dict or sequence of (int, float), optional
+        Extra spacing in pixels inserted before a fibre: ``{fibno: extra}`` adds ``extra`` px
+        between fibres ``fibno - 1`` and ``fibno`` (1-based), e.g. a blank slit slot.
+    positions : sequence of float, optional
+        Explicit offsets (pixels) for every fibre; overrides ``pitch`` and ``gaps``.
+
+    Returns
+    -------
+    np.ndarray
+        Offsets of shape ``(nf,)``, with ``offset[0] = 0``.
+    """
+    if positions is not None:
+        offsets = np.asarray(positions, dtype=float)
+        if offsets.shape != (nf,):
+            raise ValueError(
+                f"ISO_FIB_POSITIONS has {offsets.size} entries for {nf} fibres"
+            )
+        return offsets - offsets[0]
+
+    steps = np.full(max(nf - 1, 0), float(pitch))
+    if gaps:
+        items = gaps.items() if isinstance(gaps, dict) else gaps
+        for fibno, extra in items:
+            fibno = int(fibno)
+            if not 2 <= fibno <= nf:
+                raise ValueError(f"ISO_FIB_GAPS fibre {fibno} outside 2..{nf}")
+            steps[fibno - 2] += float(extra)
+    return np.concatenate([[0.0], np.cumsum(steps)])
+
+
+def _nearest_offset_distance(
+    target: np.ndarray, offsets_sorted: np.ndarray
+) -> np.ndarray:
+    """Distance from each ``target`` value to the nearest entry of ``offsets_sorted``."""
+    idx = np.clip(np.searchsorted(offsets_sorted, target), 1, len(offsets_sorted) - 1)
+    lo = np.abs(target - offsets_sorted[idx - 1])
+    hi = np.abs(target - offsets_sorted[idx])
+    return np.minimum(lo, hi)
+
+
+def match_fibers_isoplane(
+    nf: int,
+    trace_posn: np.ndarray,
+    nominal_offsets: np.ndarray,
+    max_del: Optional[float] = None,
+    fib1_ypos: Optional[float] = None,
+    max_scale_dev: float = 0.06,
+    max_iter: int = 5,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Match ISOPLANE traces to fibres against nominal slit positions.
+
+    The traces are modelled as ``y_i = y0 - scale * offset_i``. ``y0`` and ``scale`` start from
+    a search over every (fibre, trace) pairing on a grid of scales within ``max_scale_dev`` of
+    1, keeping the solution with the most traces within ``max_del`` of a fibre; they are then
+    refined by least squares on the
+    matched pairs, and fibres are assigned to traces as a linear assignment problem (as
+    ``match_fibers_taipan``). A dead fibre or a spurious peak therefore leaves the other IDs in
+    place instead of shifting them by one, as the earlier 1-to-1 ordering did.
+
+    A slit of uniform pitch with missing fibres can match equally well at two zero points one
+    pitch apart. The tie is broken by ``fib1_ypos`` when given, otherwise fibre 1 is placed on
+    the highest-y trace (the old ordering), with a warning; gaps in the slit remove the
+    ambiguity.
+
+    Parameters
+    ----------
+    nf : int
+        Number of fibres.
+    trace_posn : np.ndarray
+        Detected trace positions (y, pixels) at the reference column; trace number ``j + 1``
+        is ``trace_posn[j]``.
+    nominal_offsets : np.ndarray
+        Fibre offsets along the slit from ``isoplane_nominal_fibpos``.
+    max_del : float, optional
+        Largest accepted |trace - model| in pixels (default: 0.35 x the smallest nominal step).
+    fib1_ypos : float, optional
+        Expected y of fibre 1 at the reference column, to break pitch ambiguities.
+    max_scale_dev : float, optional
+        Largest fractional deviation of the slit scale from the nominal offsets searched.
+    max_iter : int, optional
+        Iterations of the fit-and-assign refinement.
 
     Returns
     -------
     tuple
-        (match_vector, modelled_positions)
+        ``(match_vector, modelled_positions)``: ``match_vector[i]`` is the 1-based trace number
+        of fibre ``i`` (0 = unmatched) and ``modelled_positions[i]`` the model y of fibre ``i``.
     """
+    offsets = np.asarray(nominal_offsets, dtype=float)
+    y = np.asarray(trace_posn, dtype=float)
     match_vector = np.zeros(nf, dtype=int)
-    # Just use 0.0 for modelled pos if unknown, or peak pos if matched
-    modelled_posn = np.zeros(nf)
+    ntr = len(y)
 
-    npks = len(pk_posn)
+    steps = np.diff(offsets)
+    min_step = float(np.min(steps[steps > 0])) if np.any(steps > 0) else ISOPLANE_FIB_PITCH
+    if max_del is None:
+        max_del = 0.35 * min_step
 
-    # Assume traces are ordered by increasing y (trace 1 = lowest y).
-    # Fiber table is 1..nf with 1 = highest y. Reverse so fiber 0 -> last trace.
-    count = min(nf, npks)
+    if ntr == 0 or nf == 0:
+        logger.warning("No fibres or traces to match")
+        return match_vector, np.zeros(nf)
 
-    for i in range(count):
-        trace_idx = count - 1 - i  # reverse: fiber 0 -> trace with highest y
-        match_vector[i] = trace_idx + 1  # 1-based trace index
-        modelled_posn[i] = pk_posn[trace_idx]
+    # Step 1: grid search. For each scale, candidate y0 = y_j + scale * offset_i for every
+    # pair; score = traces within max_del of a fibre, then the sum of squared distances.
+    offsets_sorted = np.sort(offsets)
+    span = max(float(np.ptp(offsets)), min_step)
+    dscale = 0.5 * max_del / span  # keeps the grid error at the slit end below max_del / 2
+    nscale = int(np.ceil(max_scale_dev / dscale))
+    cands = []  # (count, sumsq, y0, scale)
+    for sc in 1.0 + dscale * np.arange(-nscale, nscale + 1):
+        y0_c = (y[None, :] + sc * offsets[:, None]).ravel()
+        dist = _nearest_offset_distance(
+            (y0_c[:, None] - y[None, :]) / sc, offsets_sorted
+        ) * sc
+        within = dist < max_del
+        count = within.sum(axis=1)
+        keep = count == count.max()
+        sumsq = np.where(within[keep], dist[keep] ** 2, 0.0).sum(axis=1)
+        cands.append(
+            np.column_stack([count[keep], sumsq, y0_c[keep], np.full(keep.sum(), sc)])
+        )
+    cands = np.concatenate(cands)
+    best = cands[:, 0].max()
+    cands = cands[cands[:, 0] == best]
+    cands = cands[np.argsort(cands[:, 1], kind="stable")]
+
+    # Distinct solutions with the best count: two candidates are one solution when their
+    # fibre positions agree to within max_del (median over the slit)
+    solutions = []
+    for cand in cands:
+        pred = cand[2] - cand[3] * offsets
+        if all(
+            np.median(np.abs(pred - (sol[2] - sol[3] * offsets))) >= max_del
+            for sol in solutions
+        ):
+            solutions.append(cand)
+    # Without a prior, fibre 1 goes on the highest-y trace (the old 1-to-1 ordering)
+    prior = float(np.max(y)) if fib1_ypos is None else float(fib1_ypos)
+    pick = min(solutions, key=lambda sol: abs(sol[2] - prior))
+    if len(solutions) > 1:
+        logger.warning(
+            "Fibre matching is ambiguous: %d solutions match %d traces (fibre 1 at y = %s); "
+            "using y = %.1f. Set ISO_FIB1_YPOS or ISO_FIB_GAPS to fix the slit position.",
+            len(solutions),
+            int(best),
+            ", ".join(f"{sol[2]:.1f}" for sol in solutions),
+            pick[2],
+        )
+    y0, scale = float(pick[2]), float(pick[3])
+
+    # Step 2: assign, refit (y0, scale) on the matched pairs, repeat until stable
+    rows = cols = np.array([], dtype=int)
+    for _ in range(max_iter):
+        pred = y0 - scale * offsets
+        cost = np.abs(pred[:, None] - y[None, :])
+        cost_lap = np.where(cost < max_del, cost, 1.0e8)
+        r, c = linear_sum_assignment(cost_lap)
+        ok = cost_lap[r, c] < 1.0e8
+        r, c = r[ok], c[ok]
+        if np.array_equal(r, rows) and np.array_equal(c, cols):
+            break
+        rows, cols = r, c
+        if len(rows) >= 2 and np.ptp(offsets[rows]) > 0:
+            slope, y0 = np.polyfit(offsets[rows], y[cols], 1)
+            scale = -float(slope)
+        elif len(rows) == 1:
+            y0 = float(y[cols[0]] + scale * offsets[rows[0]])
+
+    match_vector[rows] = cols + 1
+    modelled_posn = y0 - scale * offsets
+
+    resid = y[cols] - modelled_posn[rows]
+    rms = float(np.sqrt(np.mean(resid**2))) if len(rows) else float("nan")
+    missing = [i + 1 for i in range(nf) if match_vector[i] == 0]
+    extra = sorted(set(range(ntr)) - set(cols.tolist()))
+    logger.info(
+        "Matched %d/%d fibres to %d traces: fibre 1 at y = %.2f, scale %.4f, rms %.2f px",
+        len(rows), nf, ntr, y0, scale, rms,
+    )
+    if missing:
+        logger.warning("Fibres without a trace (interpolated): %s", missing)
+    if extra:
+        logger.warning(
+            "Traces not matched to a fibre at y = %s",
+            ", ".join(f"{y[j]:.1f}" for j in extra),
+        )
+    if abs(scale - 1.0) > 0.05:
+        logger.warning(
+            "Fitted slit scale %.3f differs from the nominal pitch by more than 5%%", scale
+        )
 
     return match_vector, modelled_posn

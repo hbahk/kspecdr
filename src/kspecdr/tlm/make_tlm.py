@@ -23,6 +23,8 @@ from kspecdr.io.image import ImageFile
 from .match_fibers import (
     taipan_nominal_fibpos,
     match_fibers_taipan,
+    ISOPLANE_FIB_PITCH,
+    isoplane_nominal_fibpos,
     match_fibers_isoplane,
 )
 from ..constants import (
@@ -60,6 +62,16 @@ def make_tlm(args: Dict[str, Any]) -> None:
         - 'TLMAP_FILENAME': Output tramline map file path (optional)
         - 'WAVE_PREDICT': Isoplane wavelength prediction, 'OPTICAL' (default) or 'LINEAR'
           (see ``predict_wavelength``)
+        - 'ISO_FIB_PITCH': Isoplane nominal fibre spacing on the detector in pixels (default:
+          the median spacing of the detected traces)
+        - 'ISO_FIB_GAPS': Isoplane extra spacing before a fibre, ``{fibno: pixels}`` (1-based),
+          e.g. blank slit slots
+        - 'ISO_FIB_POSITIONS': Isoplane explicit slit offsets of all fibres in pixels from
+          fibre 1 (overrides pitch and gaps)
+        - 'ISO_FIB1_YPOS': Isoplane expected y of fibre 1 at the central column, to break a
+          one-pitch ambiguity on a uniform slit
+        - 'ISO_MATCH_TOL': Isoplane largest accepted trace-to-model distance in pixels
+          (default: 0.35 x the smallest nominal step)
     """
     args = init_args(args)
     im_fname = args.get("IMAGE_FILENAME")
@@ -181,8 +193,8 @@ def make_tlm_other(
     )
 
     # Step 7: Interpolate missing fibre traces
-    if instrument_code == INST_TAIPAN:
-        interpolate_tramlines_taipan(
+    if instrument_code in (INST_TAIPAN, INST_ISOPLANE):
+        interpolate_tramlines_nominal(
             tramline_map, match_vector, modelled_fibre_positions
         )
     else:
@@ -747,10 +759,35 @@ def match_traces_to_fibres(
         )
 
     elif instrument_code == INST_ISOPLANE:
-        # Simple 1-to-1 matching
-        match_vector, modelled_fibre_positions = match_fibers_isoplane(
-            len(fibre_types), pk_posn
+        # Match trace positions at the central column against the nominal slit offsets
+        valid = np.flatnonzero(np.any(traces != 0, axis=0))
+        trace_posn = traces[traces.shape[0] // 2, valid]
+
+        pitch = args.get("ISO_FIB_PITCH")
+        if pitch is None:
+            if len(trace_posn) >= 2:
+                pitch = float(np.median(np.diff(np.sort(trace_posn))))
+            else:
+                pitch = ISOPLANE_FIB_PITCH
+            logger.info(f"Isoplane fibre pitch from the traces: {pitch:.2f} px")
+        offsets = isoplane_nominal_fibpos(
+            nf,
+            pitch=float(pitch),
+            gaps=args.get("ISO_FIB_GAPS"),
+            positions=args.get("ISO_FIB_POSITIONS"),
         )
+        fib1_ypos = args.get("ISO_FIB1_YPOS")
+        match_tol = args.get("ISO_MATCH_TOL")
+        match_local, modelled_fibre_positions = match_fibers_isoplane(
+            nf,
+            trace_posn,
+            offsets,
+            max_del=None if match_tol is None else float(match_tol),
+            fib1_ypos=None if fib1_ypos is None else float(fib1_ypos),
+        )
+        # Map back from the valid-trace subset to trace numbers in ``traces``
+        matched = match_local > 0
+        match_vector[matched] = valid[match_local[matched] - 1] + 1
 
     else:
         raise NotImplementedError(
@@ -856,11 +893,13 @@ def interpolate_tramlines(
         ] + lambda_val * tramline_map[:, fibno_above]
 
 
-def interpolate_tramlines_taipan(
+def interpolate_tramlines_nominal(
     tramline_map: np.ndarray, match_vector: np.ndarray, nominal_positions: np.ndarray
 ) -> None:
     """
-    Interpolate missing fibre traces for TAIPAN instrument.
+    Interpolate missing fibre traces from nominal (modelled) fibre positions.
+
+    Used for TAIPAN and ISOPLANE, whose matching returns a model position for every fibre.
 
     Parameters
     ----------
@@ -871,7 +910,7 @@ def interpolate_tramlines_taipan(
     nominal_positions : np.ndarray
         Nominal fibre positions
     """
-    logger.info("Interpolating missing fibre traces for TAIPAN")
+    logger.info("Interpolating missing fibre traces from nominal positions")
 
     nx, nf = tramline_map.shape
 

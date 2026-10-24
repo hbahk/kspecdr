@@ -133,8 +133,15 @@ Isoplane tramline behavior in current code:
 
 - Polynomial trace order defaults to `2`.
 - Peak search method defaults to wavelet mode.
-- Fiber matching is currently simple 1-to-1 (`match_fibers_isoplane`).
-- Missing fibers are interpolated/extrapolated.
+- Fiber matching (`match_fibers_isoplane`) fits the trace positions at the central column to
+  the nominal slit offsets, `y = y0 - scale * offset`, and assigns fibers by linear
+  assignment. A dead fiber or a stray peak is left unmatched instead of shifting the other
+  fiber IDs. The slit is described by `ISO_FIB_PITCH` (pixels; default: median trace spacing),
+  `ISO_FIB_GAPS` (`{fibno: extra_px}` for blank slots) or `ISO_FIB_POSITIONS` (explicit
+  offsets). On a uniform slit with missing end fibers the match is ambiguous by one pitch: set
+  `ISO_FIB1_YPOS` (expected y of fiber 1); otherwise fiber 1 goes on the highest trace, with a
+  warning.
+- Missing fibers are interpolated/extrapolated from the fitted slit model.
 - Predicted `WAVELA` comes from the Isoplane optical model (grating equation with the detector
   geometry, `kspecdr.inst.isoplane`), good to a few pixels; `WAVE_PREDICT='LINEAR'` restores the
   `LAMBDAC` + `DISPERS` prediction.
