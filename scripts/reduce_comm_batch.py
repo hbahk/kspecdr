@@ -86,8 +86,10 @@ DC_RATE_FILE: Path | None = GLOW_TEMPLATE_DIR / "dc_rate.fits"
 if DC_RATE_FILE is not None and not DC_RATE_FILE.exists():
     DC_RATE_FILE = None
 
-# Row ranges (axis=0) used when fitting the glow model.
-# Include only detector regions that are not illuminated by fibers.
+# The glow fit excludes pixels within GLOW_TRACE_MARGIN px of the traces in the setup's TLM
+# (calib_dir/tlm_<spec_set>.fits). Without that TLM it falls back to GLOW_FIT_ROWS, row
+# ranges (axis=0) clear of the January 14-fiber traces (rows ~570-735).
+GLOW_TRACE_MARGIN = 8.0
 GLOW_FIT_ROWS = [(0, 500), (800, 1300)]
 
 # Number of PCA components to use in the glow fit
@@ -968,6 +970,14 @@ def reduce_date(date: str, force: bool = False) -> list[Path]:
                     )
                     _use_dark = False
         use_glow = GLOW_PCA_CUBE.exists()
+        glow_tlm = None
+        if use_glow:
+            with fits.open(conv_path) as _hf:
+                _set = f"{_hf[0].header.get('GRATID')}_{float(_hf[0].header.get('LAMBDAC', 0)) / 10:.0f}"
+            if (calib_dir / f"tlm_{_set}.fits").exists():
+                glow_tlm = calib_dir / f"tlm_{_set}.fits"
+            else:
+                logger.warning("  No TLM for %s — glow fit uses GLOW_FIT_ROWS", _set)
         make_im(
             conv_path.as_posix(),
             im_filename=im_path.as_posix(),
@@ -981,7 +991,9 @@ def reduce_date(date: str, force: bool = False) -> list[Path]:
             glow_pca_filename=GLOW_PCA_CUBE.as_posix() if use_glow else None,
             dc_rate_filename=DC_RATE_FILE.as_posix() if DC_RATE_FILE else None,
             glow_n_components=GLOW_N_COMPONENTS,
-            glow_fit_rows=GLOW_FIT_ROWS,
+            glow_fit_rows=None if glow_tlm else GLOW_FIT_ROWS,
+            glow_mask_tlm=glow_tlm.as_posix() if glow_tlm else None,
+            glow_trace_margin=GLOW_TRACE_MARGIN,
             verbose=False,
         )
         with fits.open(im_path) as h:

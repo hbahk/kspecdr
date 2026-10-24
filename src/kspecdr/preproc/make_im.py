@@ -72,6 +72,8 @@ class MakeIM:
         dc_rate_filename: Optional[str] = None,
         glow_n_components: int = 5,
         glow_fit_rows: Optional[list] = None,
+        glow_mask_tlm: Optional[str] = None,
+        glow_trace_margin: float = 8.0,
         use_lflat: bool = False,
         lflat_filename: Optional[str] = None,
         bad_pixel_mask: Optional[str] = None,
@@ -113,6 +115,14 @@ class MakeIM:
             ``[(0, 500), (800, 1300)]``.  Pixels outside these ranges are
             excluded from the least-squares fit but the model is still evaluated
             and subtracted everywhere.  If None, all finite pixels are used.
+        glow_mask_tlm : str, optional
+            Tramline map (``*_tlm.fits``) of this setup.  Pixels within
+            ``glow_trace_margin`` rows of any fiber trace are excluded from the glow
+            fit, column by column, so the fit follows the fiber layout instead of
+            fixed rows.  Combined with ``glow_fit_rows`` when both are given.
+        glow_trace_margin : float, optional
+            Half-width in pixels of the region masked around each trace
+            (default: 8.0).
         use_lflat : bool, optional
             Whether to divide by long-slit flat field
         lflat_filename : str, optional
@@ -180,6 +190,8 @@ class MakeIM:
                     dc_rate_filename=dc_rate_filename,
                     n_components=glow_n_components,
                     fit_rows=glow_fit_rows,
+                    mask_tlm=glow_mask_tlm,
+                    trace_margin=glow_trace_margin,
                 )
 
             # Step 5: Create and initialize variance HDU
@@ -463,6 +475,8 @@ class MakeIM:
         dc_rate_filename: Optional[str] = None,
         n_components: int = 5,
         fit_rows: Optional[list] = None,
+        mask_tlm: Optional[str] = None,
+        trace_margin: float = 8.0,
     ) -> None:
         """
         Subtract glow from an image using a PCA template fit.
@@ -488,6 +502,11 @@ class MakeIM:
         fit_rows : list of (int, int), optional
             Row (axis=0) ranges used for fitting, e.g. ``[(0, 500), (800, 1300)]``.
             If None, all finite pixels are used.
+        mask_tlm : str, optional
+            Tramline map in this image's row coordinates; pixels within
+            ``trace_margin`` rows of a trace are excluded from the fit.
+        trace_margin : float
+            Half-width in pixels of the masked region around each trace.
         """
         from astropy.stats import sigma_clip as astro_sigma_clip
 
@@ -544,6 +563,10 @@ class MakeIM:
             fit_mask_2d[:] = False
             for r0, r1 in fit_rows:
                 fit_mask_2d[r0:r1, :] = True
+        if mask_tlm:
+            fit_mask_2d &= ~self._trace_mask(
+                mask_tlm, science.shape, n_overscan, trace_margin
+            )
 
         # --- Design matrix: [glow_mean, PC1, PC2, …] ---
         templates = [glow_mean] + list(pca_comps)
@@ -580,6 +603,50 @@ class MakeIM:
             "Glow PCA subtraction done: exptime=%.1fs, n_comp=%d, n_overscan=%d, coeffs=%s",
             exptime, len(pca_comps), n_overscan, np.array2string(coeffs, precision=3),
         )
+
+    @staticmethod
+    def _trace_mask(
+        tlm_filename: str, shape: Tuple[int, int], row_offset: int, margin: float
+    ) -> np.ndarray:
+        """
+        Mask of the pixels within ``margin`` rows of any fiber trace.
+
+        Parameters
+        ----------
+        tlm_filename : str
+            Tramline map; PRIMARY is ``(nfib, nspec)`` trace rows in image coordinates.
+        shape : tuple of int
+            ``(nrows, ncols)`` of the region to mask.
+        row_offset : int
+            Image row of the region's first row (overscan rows above the template).
+        margin : float
+            Half-width of the masked band in pixels.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask of ``shape``, True near a trace.
+        """
+        with fits.open(tlm_filename) as h:
+            tlm = np.asarray(h[0].data, dtype=np.float64)
+        nrows, ncols = shape
+        mask = np.zeros(shape, dtype=bool)
+        if tlm.ndim != 2 or tlm.shape[1] != ncols:
+            logger.warning(
+                "TLM %s has shape %s, image region has %d columns; glow trace mask not applied",
+                tlm_filename, tlm.shape, ncols,
+            )
+            return mask
+        rows = np.arange(nrows)[:, None] + row_offset  # (nrows, 1) image rows
+        for trace in tlm:
+            if not np.any(trace):
+                continue
+            mask |= np.abs(rows - trace[None, :]) <= margin
+        logger.info(
+            "Glow fit: masked %.1f%% of pixels within %.1f px of %d traces (%s)",
+            100.0 * mask.mean(), margin, len(tlm), Path(tlm_filename).name,
+        )
+        return mask
 
     def _add_variance(self, im_file: ImageFile) -> None:
         """
@@ -1160,6 +1227,8 @@ def make_im(
     dc_rate_filename: Optional[str] = None,
     glow_n_components: int = 5,
     glow_fit_rows: Optional[list] = None,
+    glow_mask_tlm: Optional[str] = None,
+    glow_trace_margin: float = 8.0,
     use_lflat: bool = False,
     lflat_filename: Optional[str] = None,
     bad_pixel_mask: Optional[str] = None,
@@ -1199,6 +1268,12 @@ def make_im(
         Row (axis=0) ranges used for the glow fitting, e.g.
         ``[(0, 500), (800, 1300)]``.  Pixels outside these ranges are excluded
         from the fit but the model is subtracted everywhere.  None → all pixels.
+    glow_mask_tlm : str, optional
+        Tramline map of this setup; pixels within ``glow_trace_margin`` rows of a
+        fiber trace are excluded from the glow fit (combined with
+        ``glow_fit_rows`` when both are given).
+    glow_trace_margin : float, optional
+        Half-width in pixels of the masked region around each trace (default: 8.0).
     use_lflat : bool, optional
         Whether to divide by long-slit flat field
     lflat_filename : str, optional
@@ -1233,6 +1308,8 @@ def make_im(
         dc_rate_filename=dc_rate_filename,
         glow_n_components=glow_n_components,
         glow_fit_rows=glow_fit_rows,
+        glow_mask_tlm=glow_mask_tlm,
+        glow_trace_margin=glow_trace_margin,
         use_lflat=use_lflat,
         lflat_filename=lflat_filename,
         bad_pixel_mask=bad_pixel_mask,
