@@ -132,7 +132,12 @@ make_tlm(
 Isoplane tramline behavior in current code:
 
 - Polynomial trace order defaults to `2`.
-- Peak search method defaults to wavelet mode.
+- Peak search method defaults to wavelet mode. Each peak is then refined on the raw column
+  profile with a 3-point Gaussian fit, because the wavelet zero-crossing midpoint is pulled by
+  neighbouring fibers (and offset by +0.5 px with PyWavelets).
+- The traces are fitted jointly: an offset per trace plus tilt and curvature that vary smoothly
+  along the slit. Traces stay parallel where the flat is faint, e.g. below ~4000 Å, where they
+  are extrapolated.
 - Fiber matching (`match_fibers_isoplane`) fits the trace positions at the central column to
   the nominal slit offsets, `y = y0 - scale * offset`, and assigns fibers by linear
   assignment. A dead fiber or a stray peak is left unmatched instead of shifting the other

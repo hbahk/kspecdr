@@ -392,7 +392,16 @@ def detect_traces(
     pk_search_mthd : int, optional
         Peak search method: 0=standard, 1=local peaks, 2=wavelet (default: 0)
     dodist : bool, optional
-        Whether to do distortion modeling (default: True)
+        Whether to do distortion modeling (default: True). If True, the traces are fitted
+        jointly with their curvature shared across the slit (``_fit_traces_joint``), so a trace
+        with partial coverage or an extrapolated end follows its neighbours; otherwise each
+        trace gets its own polynomial.
+
+    Notes
+    -----
+    Peak positions found by any search method are refined to sub-pixel accuracy on the raw
+    column profile (``_refine_peaks_gauss3``) before linking. Positions are in 0-based pixel
+    index coordinates (pixel ``i`` centred at ``i``).
 
     Returns
     -------
@@ -492,11 +501,6 @@ def detect_traces(
             # Wavelet convolution method
             # peaks = _wavelet_peak_detection_old(col_data, scale=2.0, max_peaks=max_ntraces)
             peaks = _wavelet_peak_detection(col_data, max_peaks=max_ntraces)
-            # Convert peak positions to indices
-            if len(peaks) > 0:
-                peaks = peaks.astype(int)
-            else:
-                peaks = np.array([], dtype=int)
 
         else:
             # Default to standard method
@@ -514,11 +518,14 @@ def detect_traces(
             else:
                 peaks = np.array([], dtype=int)
 
+        # Sub-pixel centres on the raw profile (the wavelet zero-crossing midpoint is biased by
+        # neighbouring fibres and, with PyWavelets, by +0.5 px)
+        p_pks = _refine_peaks_gauss3(col_data, np.asarray(peaks, dtype=float))
+
         # Store peak information
-        npks = len(peaks)
+        npks = len(p_pks)
         logger.debug(f"npks: {npks}")
         if npks > 0:
-            p_pks = peaks.astype(float)
             pk_grid[stepno, :npks] = p_pks
 
         # Store central slice data for representation
@@ -540,8 +547,15 @@ def detect_traces(
     logger.info("Interpolating trace paths...")
 
     x_fit = np.arange(1, nspec + 1) - 0.5
+    x_steps = np.arange(1, nspec + 1, STEP) - 0.5
+    poly_order = order if order > 4 else 2
 
-    for idx in range(ntraces):
+    joint = None
+    if dodist:
+        joint = _fit_traces_joint(x_steps, trace_pts[:ntraces], poly_order, x_fit)
+    if joint is not None:
+        tracea[:, :ntraces] = joint
+    for idx in range(ntraces if joint is None else 0):
         # Get valid points for this trace
         valid_mask = trace_pts[idx, :] > 0
         if not np.any(valid_mask):
@@ -569,7 +583,7 @@ def detect_traces(
             y_fit = np.polyval(coeffs, x_fit)
             tracea[:, idx] = y_fit
 
-        except (np.RankWarning, ValueError):
+        except (ValueError, np.linalg.LinAlgError):
             # If fitting fails, use linear interpolation
             tracea[:, idx] = np.interp(x_fit, x_valid, y_valid)
 
@@ -579,6 +593,157 @@ def detect_traces(
     logger.info(f"Final number of traces: {ntraces}")
 
     return ntraces, tracea, rep_slice, rep_pkpos
+
+
+def _refine_peaks_gauss3(
+    profile: np.ndarray, peaks: np.ndarray, bg_halfwidth: int = 5
+) -> np.ndarray:
+    """
+    Refine peak positions with a 3-point Gaussian (log-parabola) fit on the raw profile.
+
+    Each peak moves to the local maximum within +-1 px of ``floor(peak)``; the centre is then
+    ``i + (ln f[i-1] - ln f[i+1]) / (2 (ln f[i-1] - 2 ln f[i] + ln f[i+1]))`` after subtracting
+    the minimum within ``bg_halfwidth`` px as a local background. This is unbiased for a
+    Gaussian profile and, using only the three central pixels, insensitive to neighbouring
+    fibres at the pitches seen so far (bias < 0.01 px at 10-12 px pitch, FWHM 3.5 px).
+
+    Parameters
+    ----------
+    profile : np.ndarray
+        Spatial profile (one averaged column), 0-based pixel index coordinates.
+    peaks : np.ndarray
+        Initial peak positions (pixels).
+    bg_halfwidth : int, optional
+        Half-width of the window for the local background minimum.
+
+    Returns
+    -------
+    np.ndarray
+        Refined positions; a peak keeps the integer maximum position when the three pixels do
+        not form a positive, concave log-profile.
+    """
+    n = len(profile)
+    out = np.asarray(peaks, dtype=float).copy()
+    for k, q in enumerate(out):
+        i = int(np.floor(q))
+        lo, hi = max(1, i - 1), min(n - 2, i + 1)
+        if lo > hi:
+            continue
+        seg = profile[lo : hi + 1]
+        if not np.any(np.isfinite(seg)):
+            continue
+        i = lo + int(np.nanargmax(seg))
+        out[k] = float(i)
+        win = profile[max(0, i - bg_halfwidth) : i + bg_halfwidth + 1]
+        v = profile[i - 1 : i + 2] - np.nanmin(win)
+        if not (np.all(np.isfinite(v)) and np.all(v > 0)):
+            continue
+        lv = np.log(v)
+        den = lv[0] - 2.0 * lv[1] + lv[2]
+        if den < 0:
+            delta = 0.5 * (lv[0] - lv[2]) / den
+            if abs(delta) <= 1.0:
+                out[k] = i + delta
+    return out
+
+
+def _fit_traces_joint(
+    x_steps: np.ndarray,
+    trace_pts: np.ndarray,
+    poly_order: int,
+    x_fit: np.ndarray,
+    slit_order: int = 2,
+    clip: float = 4.0,
+    n_iter: int = 3,
+) -> Optional[np.ndarray]:
+    """
+    Fit all traces jointly with a shape that varies smoothly along the slit.
+
+    Model: ``y_f(x) = a_f + sum_{k=1..K} sum_{m=0..M} c_km u_f^m X^k``, with ``a_f`` free per
+    trace, ``X`` the scaled column and ``u_f`` the scaled median position of trace ``f``
+    (``K = poly_order``, ``M = slit_order``, lowered when there are few traces). The x terms
+    (tilt, curvature) are shared, which keeps traces with partial coverage, or extrapolated
+    past the illuminated columns, parallel to their neighbours (2dfdr models trace distortion
+    across the slit in the same spirit). Points beyond ``clip`` robust sigma are rejected
+    iteratively.
+
+    Parameters
+    ----------
+    x_steps : np.ndarray
+        Column positions of the sweep steps, shape ``(nsteps,)``.
+    trace_pts : np.ndarray
+        Linked trace points, shape ``(ntraces, nsteps)``; 0 = no point.
+    poly_order : int
+        Polynomial order in x.
+    x_fit : np.ndarray
+        Columns at which the traces are evaluated.
+    slit_order : int, optional
+        Polynomial order of the shape coefficients along the slit.
+    clip : float, optional
+        Rejection threshold in robust sigma.
+    n_iter : int, optional
+        Rejection iterations.
+
+    Returns
+    -------
+    np.ndarray or None
+        Traces of shape ``(len(x_fit), ntraces)``, or None when there are fewer than 3 usable
+        traces or the fit fails (the caller then fits each trace on its own).
+    """
+    ntr = trace_pts.shape[0]
+    good = np.array([np.sum(t > 0) >= 3 for t in trace_pts], dtype=bool)
+    if good.sum() < 3:
+        return None
+    fib, step = np.nonzero(trace_pts > 0)
+    keep = good[fib]
+    fib, step = fib[keep], step[keep]
+    y = trace_pts[fib, step]
+
+    x0, xs = 0.5 * (x_fit[0] + x_fit[-1]), 0.5 * (x_fit[-1] - x_fit[0])
+    med = np.array([np.median(t[t > 0]) if np.any(t > 0) else 0.0 for t in trace_pts])
+    m0, ms = np.median(med[good]), max(np.ptp(med[good]) / 2.0, 1.0)
+    u = (med - m0) / ms
+    slit_order = min(slit_order, int(good.sum()) - 2)
+
+    traces_used = np.flatnonzero(good)
+    col_of = {f: j for j, f in enumerate(traces_used)}
+
+    def design(fibs, xcols):
+        X = (xcols - x0) / xs
+        A = np.zeros((len(fibs), len(traces_used) + poly_order * (slit_order + 1)))
+        A[np.arange(len(fibs)), [col_of[f] for f in fibs]] = 1.0
+        c = len(traces_used)
+        for k in range(1, poly_order + 1):
+            for m in range(slit_order + 1):
+                A[:, c] = u[fibs] ** m * X**k
+                c += 1
+        return A
+
+    A = design(fib, x_steps[step])
+    use = np.ones(len(y), dtype=bool)
+    try:
+        for _ in range(n_iter + 1):
+            coef, *_ = np.linalg.lstsq(A[use], y[use], rcond=None)
+            resid = y - A @ coef
+            sig = 1.4826 * np.median(np.abs(resid[use] - np.median(resid[use])))
+            new_use = np.abs(resid) <= clip * max(sig, 1e-3)
+            if np.array_equal(new_use, use):
+                break
+            use = new_use
+    except np.linalg.LinAlgError:
+        return None
+
+    logger.info(
+        "Joint trace fit: %d traces, order %d in x, %d along the slit, rms %.3f px, "
+        "%d/%d points rejected",
+        len(traces_used), poly_order, slit_order,
+        float(np.std(resid[use])), int((~use).sum()), len(y),
+    )
+
+    out = np.zeros((len(x_fit), ntr))
+    for f in traces_used:
+        out[:, f] = design(np.full(len(x_fit), f), x_fit) @ coef
+    return out
 
 
 def _link_peaks_to_traces(
