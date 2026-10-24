@@ -420,6 +420,20 @@ def detect_traces(
     HWID = 10  # Half width for averaging around columns
     MAXD = 4.0  # Maximum displacement expected for fiber traces
 
+    # Wavelet scales from the trace pitch: the default scales (1.5-3.0) merge or drop fibres
+    # below ~8 px pitch. The MTT gate is kept under half the pitch.
+    wavelet_scales = WAVELET_SCALES
+    if pk_search_mthd == 2:
+        pitch = _estimate_trace_pitch(img_data)
+        if pitch is not None:
+            wavelet_scales = _wavelet_scales_for_pitch(pitch)
+            MAXD = min(MAXD, 0.4 * pitch)
+            logger.info(
+                f"Trace pitch {pitch:.2f} px: wavelet scales {wavelet_scales}, MTT gate {MAXD:.1f} px"
+            )
+        else:
+            logger.info(f"Trace pitch not measured: default wavelet scales {wavelet_scales}")
+
     # Initialize arrays
     tracea = np.zeros((nspec, max_ntraces))
     rep_slice = np.zeros(nspat)
@@ -500,7 +514,9 @@ def detect_traces(
         elif pk_search_mthd == 2:
             # Wavelet convolution method
             # peaks = _wavelet_peak_detection_old(col_data, scale=2.0, max_peaks=max_ntraces)
-            peaks = _wavelet_peak_detection(col_data, max_peaks=max_ntraces)
+            peaks = _wavelet_peak_detection(
+                col_data, scales=wavelet_scales, max_peaks=max_ntraces
+            )
 
         else:
             # Default to standard method
@@ -593,6 +609,70 @@ def detect_traces(
     logger.info(f"Final number of traces: {ntraces}")
 
     return ntraces, tracea, rep_slice, rep_pkpos
+
+
+WAVELET_SCALES = (1.5, 2.0, 2.5, 3.0)  # default Mexican-hat scales of the wavelet search
+
+
+def _estimate_trace_pitch(
+    img_data: np.ndarray, frac: float = 0.2, min_lag: int = 3, max_lag: int = 60
+) -> Optional[float]:
+    """
+    Trace pitch from the autocorrelation of the spatial profile.
+
+    The profile is the median over the central ``frac`` of the columns, with a running median
+    (``4 * max_lag + 1`` px) removed as background and negatives clipped. The pitch is the first
+    autocorrelation maximum above 0.2 at lag ``min_lag..max_lag``, refined by a parabola. A gap
+    or a dead fibre lowers that maximum but does not move it.
+
+    Parameters
+    ----------
+    img_data : np.ndarray
+        Image ``(nspat, nspec)``.
+    frac : float, optional
+        Fraction of the columns, centred, used for the profile.
+    min_lag, max_lag : int, optional
+        Lag range searched (pixels).
+
+    Returns
+    -------
+    float or None
+        Pitch in pixels, or None when no autocorrelation maximum is found (e.g. pitch below
+        ~1.3 FWHM, where the fibres blend).
+    """
+    nspat, nspec = img_data.shape
+    c0 = int(nspec * (0.5 - frac / 2))
+    c1 = max(int(nspec * (0.5 + frac / 2)), c0 + 1)
+    prof = np.nanmedian(img_data[:, c0:c1], axis=1)
+    if not np.any(np.isfinite(prof)):
+        return None
+    prof = np.where(np.isfinite(prof), prof, np.nanmedian(prof))
+    prof = prof - ndimage.median_filter(prof, size=4 * max_lag + 1, mode="reflect")
+    prof = np.clip(prof, 0.0, None)
+    ac = np.correlate(prof, prof, mode="full")[prof.size - 1 :]
+    if ac[0] <= 0:
+        return None
+    ac = ac / ac[0]
+    for lag in range(min_lag, min(max_lag, ac.size - 1)):
+        if ac[lag] > ac[lag - 1] and ac[lag] >= ac[lag + 1] and ac[lag] > 0.2:
+            den = ac[lag - 1] - 2.0 * ac[lag] + ac[lag + 1]
+            return float(lag + 0.5 * (ac[lag - 1] - ac[lag + 1]) / den) if den < 0 else float(lag)
+    return None
+
+
+def _wavelet_scales_for_pitch(pitch: float) -> Tuple[float, ...]:
+    """
+    Wavelet scales for a given trace pitch.
+
+    Scales up to ``pitch / 4`` (between 1.0 and 3.0); 1.0 is added only when that limit is below
+    2.0. A 12 px pitch keeps the default ``(1.5, 2.0, 2.5, 3.0)``; 8 px gives ``(1.5, 2.0)`` and
+    6-7 px ``(1.0, 1.5)``. Tested on synthetic slits with FWHM 3.5 px, a blank slot and a dead
+    fibre: every peak recovered at 6-12 px pitch (S/N 50 per pixel), against 0-40% of columns
+    with the default scales below 10 px.
+    """
+    smax = min(max(pitch / 4.0, 1.0), 3.0)
+    candidates = (1.0,) + WAVELET_SCALES
+    return tuple(s for s in candidates if s <= smax + 1e-9 and (s >= 1.5 or smax < 2.0))
 
 
 def _refine_peaks_gauss3(
@@ -1604,10 +1684,15 @@ def _filter_by_width(
     widths: np.ndarray,
     min_keep: int,
     rel_tol: float = 0.35,
+    rel_tol_high: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Keep peaks whose widths are near the median width.
     rel_tol: relative tolerance to the median width (e.g. 0.35 -> median±35%)
+    rel_tol_high: upper tolerance if different (default: rel_tol). With dense traces the
+        neighbours' negative wavelet lobes narrow the interior fibres, so the outermost fibres
+        (and those beside a gap) are ~1.5x the median width: a looser upper bound keeps them
+        while still rejecting merged or edge responses (several times the median).
     min_keep: minimum number of peaks to keep
         to prevent too many peaks from being filtered out (e.g. late columns)
         if the number of peaks is less than min_keep, do not apply width filter
@@ -1622,7 +1707,8 @@ def _filter_by_width(
         return peaks, widths
 
     w_med = float(np.median(widths))
-    m = (widths > (1 - rel_tol) * w_med) & (widths < (1 + rel_tol) * w_med)
+    hi = rel_tol if rel_tol_high is None else rel_tol_high
+    m = (widths > (1 - rel_tol) * w_med) & (widths < (1 + hi) * w_med)
 
     # safety check: if too few peaks are left, do not apply width filter
     if np.count_nonzero(m) < min_keep:
@@ -1774,7 +1860,23 @@ def _wavelet_convolution_multiscale(
     """
     Multi-scale Mexican-hat CWT response.
     Returns per-sample max positive response across scales.
+
+    The signal is reflect-padded before the transform: with zero padding a pedestal makes a
+    strong spurious response at the array ends.
     """
+    signal = np.asarray(signal, dtype=float)
+    npad = min(int(np.ceil(8 * max(np.atleast_1d(scales)))), signal.size - 1)
+    if npad > 0:
+        return _wavelet_convolution_multiscale_raw(
+            np.pad(signal, npad, mode="reflect"), scales
+        )[npad : npad + signal.size]
+    return _wavelet_convolution_multiscale_raw(signal, scales)
+
+
+def _wavelet_convolution_multiscale_raw(
+    signal: np.ndarray, scales: Sequence[float]
+) -> np.ndarray:
+    """Multi-scale Mexican-hat CWT response of ``signal`` as given (no padding)."""
     signal = np.asarray(signal, dtype=float)
 
     try:
@@ -1821,6 +1923,7 @@ def _wavelet_peak_detection(
     k_mad: float = 5.0,
     max_peaks: int = None,
     width_rel_tol: float = 0.35,
+    width_rel_tol_high: float = 0.8,
 ) -> np.ndarray:
     """
     Detect peaks using multi-scale wavelet response + MAD-based threshold.
@@ -1872,7 +1975,11 @@ def _wavelet_peak_detection(
 
     # Step 5: filter out peaks with widths too far from the median width
     peak_positions, widths = _filter_by_width(
-        peak_positions, widths, min_keep=max_peaks // 2, rel_tol=width_rel_tol
+        peak_positions,
+        widths,
+        min_keep=max_peaks // 2,
+        rel_tol=width_rel_tol,
+        rel_tol_high=width_rel_tol_high,
     )
     logger.debug(f"# of peaks after width filtering: {len(peak_positions)}")
 

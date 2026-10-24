@@ -7,10 +7,12 @@ import logging
 sys.path.append(os.path.abspath('src'))
 
 from kspecdr.tlm.make_tlm import (
+    detect_traces,
     _wavelet_peak_detection,
     _refine_peaks_gauss3,
     _fit_traces_joint,
 )
+from kspecdr.tlm.match_fibers import isoplane_nominal_fibpos, match_fibers_isoplane
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +69,40 @@ def test_joint_fit_extrapolation():
     return True
 
 
+def test_dense_slit_end_to_end():
+    # 42-fibre slit at 6 and 7 px pitch with a blank slot and two dead fibres, faint blue end:
+    # every lit fibre must be traced and matched (the default wavelet scales lost fibres here)
+    ok = True
+    for pitch in (7.0, 6.0):
+        rng = np.random.default_rng(0)
+        nf, dead = 42, (7, 30)
+        off = isoplane_nominal_fibpos(nf, pitch=pitch, gaps={22: pitch})
+        x = np.arange(1340)
+        shape = 2.5e-6 * (x - 800.0) ** 2 - 1.5e-3 * x
+        true = np.array([650.0 + off.max() / 2 - 1.01 * o + shape for o in off])
+        flux = 1000.0 * np.clip((x - 150) / 500.0, 0.02, 1.0)
+        yy = np.arange(1300)[:, None]
+        img = 30.0 + rng.normal(0, 1000.0 / 30.0, (1300, 1340))
+        for f in range(nf):
+            if f + 1 not in dead:
+                img += rng.uniform(0.5, 1.0) * flux * np.exp(-0.5 * ((yy - true[f]) / SIG) ** 2)
+        nt, tr, _, _ = detect_traces(img, 1340, 1300, nf, nf, 2, False, False, 2, True)
+        valid = np.flatnonzero(np.any(tr != 0, axis=0))
+        mv, _ = match_fibers_isoplane(nf, tr[670, valid], off)
+        lit = [f for f in range(nf) if f + 1 not in dead]
+        bad = [f + 1 for f in lit
+               if mv[f] == 0 or np.abs(tr[300:, valid[mv[f] - 1]] - true[f, 300:]).max() > 0.2]
+        print(f"pitch {pitch}: {nt} traces, wrong or missing fibres {bad}")
+        if nt != len(lit) or bad or any(mv[f - 1] for f in dead):
+            print("FAIL: dense slit")
+            ok = False
+    return ok
+
+
 if __name__ == "__main__":
-    results = [test_refinement_bias(), test_joint_fit_extrapolation()]
+    results = [
+        test_refinement_bias(),
+        test_joint_fit_extrapolation(),
+        test_dense_slit_end_to_end(),
+    ]
     sys.exit(0 if all(results) else 1)
