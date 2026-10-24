@@ -41,7 +41,11 @@ The standard progression in this repository is:
 
 - `*_converted.fits`: Isoplane raw file converted to `kspecdr`-compatible headers and orientation.
 - `*_im.fits`: preprocessed image file (float image + `VARIANCE` HDU).
-- `*_tlm.fits`: tramline map from a fiber flat (`PRIMARY` tramlines + predicted `WAVELA`).
+- `*_tlm.fits`: tramline map from a fiber flat (`PRIMARY` tramlines + predicted `WAVELA` +
+  `TLMSUPP`). The header records where the traces were measured, not extrapolated, in 1-based
+  columns: `TLMXMIN`–`TLMXMAX` for every measured fiber, `TLMXLO`–`TLMXHI` for any fiber, and
+  `TLMNMEAS` fibers with a measured trace. `TLMSUPP` lists `XMIN`/`XMAX` per fiber (0 =
+  interpolated). `make_ex` copies the keywords into the EX header.
 - `*_ex.fits`: extracted spectra (`PRIMARY`, `VARIANCE`, optional `WAVELA`, `FIBRES`).
 - `*_red.fits`: reduced arc output (copy of `EX` with calibrated `WAVELA` and `SHIFTS` written by `reduce_arc`).
 

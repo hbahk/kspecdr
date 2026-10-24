@@ -167,7 +167,7 @@ def make_tlm_other(
     logger.info(f"Max number of traces: {max_ntraces}")
     logger.info(f"Image dimensions: nspec={nspec}, nspat={nspat}")
 
-    ntraces, traces, spat_slice, pk_posn = detect_traces(
+    ntraces, traces, spat_slice, pk_posn, trace_xrange = detect_traces(
         img_data,
         nspec,
         nspat,
@@ -209,6 +209,12 @@ def make_tlm_other(
     if instrument_code != INST_2DF:
         wavelength_data = predict_wavelength(im_file, tramline_map, args)
         write_wavelength_data(tlm_fname, wavelength_data)
+
+    # Step 10: Record where each fibre's trace was measured (not extrapolated)
+    fibre_xrange = np.full((len(fibre_types), 2), np.nan)
+    matched = match_vector > 0
+    fibre_xrange[matched] = trace_xrange[match_vector[matched] - 1]
+    write_trace_support(tlm_fname, fibre_xrange, nspec)
 
     logger.info("Tramline map generation completed")
 
@@ -413,6 +419,10 @@ def detect_traces(
         Representation profile slice of shape (nspat,).
     rep_pkpos : np.ndarray
         Representation slice peak list of shape (nspat,).
+    trace_xrange : np.ndarray
+        Shape (max_ntraces, 2): first and last swept column (0-based) whose peak was used in
+        the trace fit, NaN for traces without a fit. Each swept column averages +-10 columns;
+        outside this range the trace is extrapolated.
     """
 
     # Heuristic parameters (from Fortran code)
@@ -566,11 +576,22 @@ def detect_traces(
     x_steps = np.arange(1, nspec + 1, STEP) - 0.5
     poly_order = order if order > 4 else 2
 
+    step_cols = np.arange(0, nspec, STEP)
+    trace_xrange = np.full((max_ntraces, 2), np.nan)
+
+    def _set_xrange(idx, used_steps):
+        cols = step_cols[used_steps]
+        if cols.size:
+            trace_xrange[idx] = (cols.min(), cols.max())
+
     joint = None
     if dodist:
         joint = _fit_traces_joint(x_steps, trace_pts[:ntraces], poly_order, x_fit)
     if joint is not None:
-        tracea[:, :ntraces] = joint
+        tracea[:, :ntraces], used_pts = joint
+        for idx in range(ntraces):
+            if np.any(tracea[:, idx] != 0):
+                _set_xrange(idx, used_pts[idx])
     for idx in range(ntraces if joint is None else 0):
         # Get valid points for this trace
         valid_mask = trace_pts[idx, :] > 0
@@ -598,17 +619,19 @@ def detect_traces(
             # Evaluate polynomial across full x range
             y_fit = np.polyval(coeffs, x_fit)
             tracea[:, idx] = y_fit
+            _set_xrange(idx, valid_mask)
 
         except (ValueError, np.linalg.LinAlgError):
             # If fitting fails, use linear interpolation
             tracea[:, idx] = np.interp(x_fit, x_valid, y_valid)
+            _set_xrange(idx, valid_mask)
 
     # Update ntraces to actual number of valid traces
     ntraces = np.sum([np.any(tracea[:, i] != 0) for i in range(max_ntraces)])
 
     logger.info(f"Final number of traces: {ntraces}")
 
-    return ntraces, tracea, rep_slice, rep_pkpos
+    return ntraces, tracea, rep_slice, rep_pkpos, trace_xrange
 
 
 WAVELET_SCALES = (1.5, 2.0, 2.5, 3.0)  # default Mexican-hat scales of the wavelet search
@@ -766,9 +789,10 @@ def _fit_traces_joint(
 
     Returns
     -------
-    np.ndarray or None
-        Traces of shape ``(len(x_fit), ntraces)``, or None when there are fewer than 3 usable
-        traces or the fit fails (the caller then fits each trace on its own).
+    tuple or None
+        ``(traces, used)``: traces of shape ``(len(x_fit), ntraces)`` and the boolean mask of
+        the points kept in the fit, shape ``(ntraces, nsteps)``. None when there are fewer than
+        3 usable traces or the fit fails (the caller then fits each trace on its own).
     """
     ntr = trace_pts.shape[0]
     good = np.array([np.sum(t > 0) >= 3 for t in trace_pts], dtype=bool)
@@ -823,7 +847,9 @@ def _fit_traces_joint(
     out = np.zeros((len(x_fit), ntr))
     for f in traces_used:
         out[:, f] = design(np.full(len(x_fit), f), x_fit) @ coef
-    return out
+    used = np.zeros(trace_pts.shape, dtype=bool)
+    used[fib[use], step[use]] = True
+    return out, used
 
 
 def _link_peaks_to_traces(
@@ -1405,6 +1431,70 @@ def predict_wavelength_isoplane(
         f"{wavevec[0]:.1f}-{wavevec[-1]:.1f} A"
     )
     return wavevec.reshape(nspec, 1).repeat(nf, axis=1)
+
+
+TLM_SUPPORT_KEYS = ("TLMXMIN", "TLMXMAX", "TLMXLO", "TLMXHI", "TLMNMEAS")
+
+
+def write_trace_support(tlm_fname: str, fibre_xrange: np.ndarray, nspec: int) -> None:
+    """
+    Record the measured column range of the traces in the tramline map.
+
+    Writes to the PRIMARY header (1-based FITS columns, centres of the swept columns, each an
+    average of +-10 columns):
+
+    - ``TLMXMIN`` / ``TLMXMAX``: range measured for every fibre with a trace
+    - ``TLMXLO`` / ``TLMXHI``: range measured for at least one fibre
+    - ``TLMNMEAS``: number of fibres with a measured trace (the rest are interpolated)
+
+    and a ``TLMSUPP`` table with ``FIBRE``, ``MEASURED`` and per-fibre ``XMIN`` / ``XMAX``
+    (1-based, 0 when the fibre has no measured trace). Outside these ranges the tramlines are
+    extrapolated from the fit.
+
+    Parameters
+    ----------
+    tlm_fname : str
+        Tramline map filename (updated in place).
+    fibre_xrange : np.ndarray
+        Shape (nfib, 2): first and last measured column per fibre (0-based), NaN if none.
+    nspec : int
+        Number of columns.
+    """
+    from astropy.io import fits
+
+    measured = np.all(np.isfinite(fibre_xrange), axis=1)
+    xr = np.where(np.isfinite(fibre_xrange), fibre_xrange + 1, 0).astype(int)
+
+    with fits.open(tlm_fname, mode="update") as hdul:
+        hdr = hdul[0].header
+        if np.any(measured):
+            lo, hi = xr[measured, 0], xr[measured, 1]
+            hdr["TLMXMIN"] = (int(lo.max()), "First column traced for all measured fibres")
+            hdr["TLMXMAX"] = (int(hi.min()), "Last column traced for all measured fibres")
+            hdr["TLMXLO"] = (int(lo.min()), "First column traced for any fibre")
+            hdr["TLMXHI"] = (int(hi.max()), "Last column traced for any fibre")
+        hdr["TLMNMEAS"] = (int(measured.sum()), "Fibres with a measured (not interp.) trace")
+        table = fits.BinTableHDU.from_columns(
+            [
+                fits.Column(name="FIBRE", format="J", array=np.arange(1, len(xr) + 1)),
+                fits.Column(name="MEASURED", format="L", array=measured),
+                fits.Column(name="XMIN", format="J", array=xr[:, 0]),
+                fits.Column(name="XMAX", format="J", array=xr[:, 1]),
+            ],
+            name="TLMSUPP",
+        )
+        if "TLMSUPP" in hdul:
+            del hdul["TLMSUPP"]
+        hdul.append(table)
+        hdul.flush()
+
+    if np.any(measured):
+        logger.info(
+            "Traces measured over columns %d-%d for all %d measured fibres (%d-%d for any); "
+            "%d of %d columns extrapolated for some fibre",
+            hdr["TLMXMIN"], hdr["TLMXMAX"], int(measured.sum()), hdr["TLMXLO"], hdr["TLMXHI"],
+            nspec - (hdr["TLMXMAX"] - hdr["TLMXMIN"] + 1), nspec,
+        )
 
 
 def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:

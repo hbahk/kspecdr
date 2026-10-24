@@ -15,7 +15,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 import warnings
 
 from ..io.image import ImageFile
-from ..tlm.make_tlm import predict_wavelength
+from ..tlm.make_tlm import TLM_SUPPORT_KEYS, predict_wavelength
 from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
@@ -259,6 +259,12 @@ def make_ex_from_im(
 
     # Update Header
     header["HISTORY"] = f"Extracted using {operat}"
+
+    # Carry the measured trace range of the tramline map (columns outside are extrapolated)
+    with fits.open(tlm_fname) as hdul_tlm:
+        for key in TLM_SUPPORT_KEYS:
+            if key in hdul_tlm[0].header:
+                header[key] = (hdul_tlm[0].header[key], hdul_tlm[0].header.comments[key])
 
     # Set Axes Labels
     header["CTYPE1"] = "Wavelength"

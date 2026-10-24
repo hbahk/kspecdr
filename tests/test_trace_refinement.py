@@ -54,9 +54,13 @@ def test_joint_fit_extrapolation():
     curve = 2.0e-6 * (x_steps - 900.0) ** 2 - 1.0e-3 * x_steps
     tp = y0[:, None] + curve[None, :] + rng.normal(0, 0.03, (14, x_steps.size))
     tp[:, x_steps < 400] = 0.0
-    out = _fit_traces_joint(x_steps, tp, 2, x_fit)
-    if out is None:
+    res = _fit_traces_joint(x_steps, tp, 2, x_fit)
+    if res is None:
         print("FAIL: joint fit returned None")
+        return False
+    out, used = res
+    if used[:, x_steps < 400].any() or not used[:, x_steps >= 400].all():
+        print("FAIL: used-point mask does not match the measured points")
         return False
     sd = np.diff(out[0, :]).std()
     true0 = y0 + 2.0e-6 * (x_fit[0] - 900.0) ** 2 - 1.0e-3 * x_fit[0]
@@ -86,7 +90,12 @@ def test_dense_slit_end_to_end():
         for f in range(nf):
             if f + 1 not in dead:
                 img += rng.uniform(0.5, 1.0) * flux * np.exp(-0.5 * ((yy - true[f]) / SIG) ** 2)
-        nt, tr, _, _ = detect_traces(img, 1340, 1300, nf, nf, 2, False, False, 2, True)
+        nt, tr, _, _, xr = detect_traces(img, 1340, 1300, nf, nf, 2, False, False, 2, True)
+        # flux is 2% of peak below x ~ 160: traces must start being measured near there
+        print(f"   measured columns, all traces: {np.nanmax(xr[:nt, 0]):.0f}-{np.nanmin(xr[:nt, 1]):.0f}")
+        if not (np.nanmax(xr[:nt, 0]) <= 400 and np.nanmin(xr[:nt, 1]) >= 1250):
+            print("FAIL: measured column range")
+            ok = False
         valid = np.flatnonzero(np.any(tr != 0, axis=0))
         mv, _ = match_fibers_isoplane(nf, tr[670, valid], off)
         lit = [f for f in range(nf) if f + 1 not in dead]
