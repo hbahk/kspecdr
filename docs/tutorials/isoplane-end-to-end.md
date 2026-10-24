@@ -78,6 +78,23 @@ write_isoplane_converted_image(
 
 For multi-frame cubes, use `split_frames=True` and combine later if needed.
 
+Frames taken under the K-SPEC ICS carry frame cards added by the ICS IsoPlane server
+(`ICSFUNC`, `OBSTYPE`, `UTSTART`/`UTEND`, `EXPNUM`/`NEXP`, `TILEID`, `OBJECT`, site, ...). For
+them `ndfclass` may be left out:
+
+- **Class:** from `ICSFUNC` (`getbias` → BIAS, `getdark` → DARK, `getflat` → MFFFF, `getarc` →
+  MFARC), and from `OBSTYPE` for `getobj` frames. An explicit `ndfclass` still wins, with a
+  warning when it differs from the cards.
+- **Times:** `UTSTART`/`UTEND`/`UTMJD` come from the SPE time stamps of the exposure start and
+  end, which are kept in full as `DATE-BEG`/`DATE-END`. `TIMESRC` records the source (`SPE`,
+  or `DATE-OBS` when a frame has no stamp).
+- **Sections:** `DATASEC`/`BIASSEC` are converted with the image flips.
+- **Metadata:** `kspecdr.inst.isoplane.ics_frame_info(header)` returns the frame metadata,
+  including the site as an `EarthLocation`.
+
+Frames without the cards (January 2026 commissioning) are converted as before: `ndfclass` is
+required, and the times come from `DATE-OBS`.
+
 ### Step 2. Build master bias and dark
 
 Run `make_im` on converted calibration files and combine:

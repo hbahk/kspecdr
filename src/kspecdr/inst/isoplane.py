@@ -5,9 +5,12 @@ This module provides functions to convert raw headers from various instruments
 (e.g., PIXIS/Isoplane backup CCD) to the standard format required by kspecdr.
 """
 
+import datetime as dt
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from astropy.coordinates import EarthLocation
+import astropy.units as u
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
 from astropy.time import Time
@@ -344,23 +347,158 @@ def sanitize_header_drop_unparsable(
     return new
 
 
-# TODO: review this - time stamping per frame, add gain/rdnoise settings for different setups
-def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
+# Frame cards the K-SPEC ICS IsoPlane server adds to each LightField FITS (KSPEC_ICS
+# SPECTRO_ISOPLANE/fitsio.py, card table in its README "Header cards"). The command fixes the
+# shutter, so ICSFUNC decides the class; getobj frames take theirs from OBSTYPE.
+ICS_FUNC_NDFCLASS = {"getbias": "BIAS", "getdark": "DARK", "getflat": "MFFFF", "getarc": "MFARC"}
+ICS_OBSTYPE_NDFCLASS = {
+    "BIAS": "BIAS",
+    "DARK": "DARK",
+    "FLAT": "MFFFF",
+    "ARC": "MFARC",
+    "OBJECT": "MFOBJECT",
+}
+
+
+def _ics_value(header: fits.Header, key: str) -> Any:
+    """Value of an ICS card, or None when absent or written as 'None' (older ICS)."""
+    value = header.get(key)
+    if value is None or str(value).strip() in ("", "None"):
+        return None
+    return value
+
+
+def _parse_utc(value: Any) -> Optional[Time]:
+    """astropy Time from an ISO 8601 UTC string with optional offset or 'Z'; None if invalid."""
+    if value is None:
+        return None
+    try:
+        t = dt.datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return Time(t, scale="utc")
+
+
+def ics_frame_info(header: fits.Header) -> Optional[Dict[str, Any]]:
+    """
+    Frame metadata written by the K-SPEC ICS (IsoPlane server), or None for frames without it.
+
+    A frame counts as an ICS frame when it has ``ICSFUNC`` or ``SPECBACK``; the January 2026
+    commissioning frames have neither.
+
+    Parameters
+    ----------
+    header : fits.Header
+        Raw LightField header.
+
+    Returns
+    -------
+    dict or None
+        ``ndfclass`` (from ICSFUNC, or OBSTYPE for getobj), ``obstype``, ``icsfunc``,
+        ``obsdate``, ``projid``, ``tileid``, ``object``, ``tilera``, ``tiledec``, ``expnum``,
+        ``nexp`` (int or None), ``ut_start`` / ``ut_end`` (astropy Time or None, from the SPE
+        time stamps), ``site`` (EarthLocation or None) and ``observat``.
+    """
+    if _ics_value(header, "ICSFUNC") is None and _ics_value(header, "SPECBACK") is None:
+        return None
+
+    func = str(_ics_value(header, "ICSFUNC") or "").lower()
+    obstype = _ics_value(header, "OBSTYPE")
+    from_func = ICS_FUNC_NDFCLASS.get(func)
+    from_type = ICS_OBSTYPE_NDFCLASS.get(str(obstype).upper()) if obstype else None
+    if from_func is not None:
+        ndfclass = from_func
+        if from_type is not None and from_type != from_func:
+            logger.warning(
+                f"OBSTYPE {obstype} disagrees with ICSFUNC {func}: using {from_func} "
+                "(the command sets the shutter)"
+            )
+    else:
+        ndfclass = from_type or "MFOBJECT"
+        if func == "getobj" and from_type in ("BIAS", "DARK"):
+            logger.warning(
+                f"OBSTYPE {obstype} taken with getobj: the shutter was open (ICS GUI before "
+                "per-type frame commands)"
+            )
+
+    def as_int(key):
+        value = _ics_value(header, key)
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    site = None
+    lat, lon = _ics_value(header, "SITELAT"), _ics_value(header, "SITELONG")
+    if lat is not None and lon is not None:
+        try:
+            site = EarthLocation.from_geodetic(
+                lon=float(lon) * u.deg,
+                lat=float(lat) * u.deg,
+                height=float(_ics_value(header, "SITEELEV") or 0.0) * u.m,
+            )
+        except (TypeError, ValueError):
+            logger.warning(f"Unreadable site cards SITELAT={lat} SITELONG={lon}")
+
+    return {
+        "ndfclass": ndfclass,
+        "obstype": obstype,
+        "icsfunc": func or None,
+        "obsdate": _ics_value(header, "OBSDATE"),
+        "projid": _ics_value(header, "PROJID"),
+        "tileid": _ics_value(header, "TILEID"),
+        "object": _ics_value(header, "OBJECT"),
+        "tilera": _ics_value(header, "TILERA"),
+        "tiledec": _ics_value(header, "TILEDEC"),
+        "expnum": as_int("EXPNUM"),
+        "nexp": as_int("NEXP"),
+        "ut_start": _parse_utc(_ics_value(header, "UTSTART")),
+        "ut_end": _parse_utc(_ics_value(header, "UTEND")),
+        "site": site,
+        "observat": _ics_value(header, "OBSERVAT"),
+    }
+
+
+# TODO: review this - add gain/rdnoise settings for different setups
+def convert_isoplane_header(header: fits.Header, ndfclass: Optional[str] = None) -> fits.Header:
     """
     Convert a PIXIS/Isoplane raw header to the standard kspecdr format.
+
+    Frames taken under the K-SPEC ICS carry frame cards (``ics_frame_info``): the class then
+    comes from ICSFUNC/OBSTYPE, and the exposure start and end from the SPE time stamps
+    (UTSTART/UTEND), kept in full as DATE-BEG/DATE-END. Frames without them (January 2026
+    commissioning) are converted as before: the caller gives the class, and the times come
+    from DATE-OBS. The ICS cards (OBSTYPE, ICSFUNC, OBSDATE, PROJID, TILEID, OBJECT,
+    TILERA/TILEDEC, EXPNUM, NEXP, OBSERVAT, SITELAT/SITELONG/SITEELEV, ...) are kept.
 
     Parameters
     ----------
     header : fits.Header
         The original raw header.
-    ndfclass : str
+    ndfclass : str, optional
         The NDFCLASS of the data (e.g., "MFOBJECT", "MFARC", "MFFFF", "BIAS", "DARK").
+        Required for frames without ICS cards; for ICS frames it overrides the class from the
+        cards (with a warning when they differ).
 
     Returns
     -------
     fits.Header
         The converted header with standardized keywords.
     """
+    ics = ics_frame_info(header)
+    if ics is None and ndfclass is None:
+        raise ValueError("ndfclass is required for a frame without ICS frame cards")
+    if ics is not None:
+        if ndfclass is None:
+            ndfclass = ics["ndfclass"]
+        elif ndfclass != ics["ndfclass"]:
+            logger.warning(
+                f"NDFCLASS {ndfclass} given; the ICS cards say {ics['ndfclass']} "
+                f"(ICSFUNC {ics['icsfunc']}, OBSTYPE {ics['obstype']})"
+            )
+
     # Create a copy to avoid modifying the original
     new_header = header.copy()
     
@@ -415,9 +553,25 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
     new_header["ELAPSED"] = (exposed, "Elapsed Time (seconds)")
 
     # 4. Dates and Times
-    # Input: DATE-OBS= '2024-08-24T13:47:39'
+    # ICS frames: SPE time stamps of the exposure start and end (UTSTART/UTEND, ISO 8601 UTC).
+    # The 2dfdr-style UTSTART/UTEND (HH:MM:SS) replace them; DATE-BEG/DATE-END keep them in full.
+    t_beg = ics["ut_start"] if ics is not None else None
+    t_fin = ics["ut_end"] if ics is not None else None
+    if ics is not None and t_beg is None:
+        logger.warning("ICS frame without a UTSTART time stamp: times from DATE-OBS")
     date_obs = header.get("DATE-OBS", "")
-    if date_obs:
+    if t_beg is not None:
+        if t_fin is None:
+            t_fin = t_beg + exposed / 86400.0
+        new_header["UTDATE"] = (t_beg.strftime("%Y:%m:%d"), "UT Date")
+        new_header["UTSTART"] = (t_beg.strftime("%H:%M:%S"), "UT Start")
+        new_header["UTMJD"] = (t_beg.mjd, "UT MJD at start of exposure")
+        new_header["UTEND"] = (t_fin.strftime("%H:%M:%S"), "UT End")
+        new_header["EPOCH"] = (t_beg.jyear, "Current Epoch, Years A.D.")
+        new_header["DATE-BEG"] = (t_beg.isot, "Exposure start (UTC, SPE time stamp)")
+        new_header["DATE-END"] = (t_fin.isot, "Exposure end (UTC, SPE time stamp)")
+        new_header["TIMESRC"] = ("SPE", "Source of UTSTART/UTEND")
+    elif date_obs:
         try:
             t = Time(date_obs, format="isot", scale="utc")
             new_header["UTDATE"] = (t.strftime("%Y:%m:%d"), "UT Date")
@@ -427,6 +581,8 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
             t_end = t + (exposed / 86400.0)  # exposed is seconds
             new_header["UTEND"] = (t_end.strftime("%H:%M:%S"), "UT End")
             new_header["EPOCH"] = (t.jyear, "Current Epoch, Years A.D.")
+            if ics is not None:
+                new_header["TIMESRC"] = ("DATE-OBS", "Source of UTSTART/UTEND")
         except Exception as e:
             logger.warning(f"Could not parse DATE-OBS: {e}")
 
@@ -520,8 +676,7 @@ def convert_isoplane_header(header: fits.Header, ndfclass: str) -> fits.Header:
         new_header["SPECTID"] = ("UNKNOWN", "Spectrograph ID")
 
     # 10. Observation Type
-    # Try to derive from object name or other fields if possible
-    # For now, default to OBJECT if unknown
+    # ICS frames carry OBSTYPE; otherwise default to OBJECT
     if "OBSTYPE" not in new_header:
         new_header["OBSTYPE"] = ("OBJECT", "Observation type")
         
@@ -599,7 +754,7 @@ def _orient_isoplane_frame(data: np.ndarray, hdr: fits.Header) -> np.ndarray:
 def write_isoplane_converted_image(
     fpath: str,
     output_fpath: str,
-    ndfclass: str,
+    ndfclass: Optional[str] = None,
     n_fibers: int = None,
     fiber_table: Table = None,
     split_frames: bool = False,
@@ -619,8 +774,9 @@ def write_isoplane_converted_image(
         Input raw FITS filename.
     output_fpath : str
         Output converted FITS filename.
-    ndfclass : str
-        NDFCLASS to stamp into the converted header.
+    ndfclass : str, optional
+        NDFCLASS to stamp into the converted header. Required for frames without ICS frame
+        cards; ICS frames take it from ICSFUNC/OBSTYPE (see ``convert_isoplane_header``).
     n_fibers : int, optional
         Number of fibers to create when using a dummy fiber table.
     fiber_table : astropy.table.Table, optional
