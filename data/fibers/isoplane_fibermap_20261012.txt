@@ -1,0 +1,100 @@
+# K-SPEC fibre map for the Isoplane slit: positioner hole <-> hole label <-> slit position.
+#
+# Source: 73Positioners_mapping.xlsx, sheet "Positioner mapping_20261012" (K-SPEC team,
+# received 2026-10-26). One row per positioner hole (73) plus the fixed sky-fibre holes that
+# feed the slit. This map, not the .assign.txt file, decides which holes reach the slit and
+# which of them are sky: assign files list a target for every positioner hole.
+#
+# Columns
+#   HOLE    positioner hole number 1-73, the row order of the 73 positioners in .assign.txt
+#           and in the ICS Fiber_Configuration_config73 table; '-' for a fixed sky-fibre hole
+#   LABEL   hole label on the focal plate (row letter + column number), as in .assign.txt
+#   FIBNUM  "Fiber Number" of the sheet (1-140); the ICS metrology (Positioner_Map.txt) reads
+#           it as the positioner unit number of Positioner_Arm_Table
+#   LOCKED  1 = positioner fixed in place (orange rows of the sheet), 0 = it moves,
+#           '-' = no positioner (fixed sky-fibre hole)
+#   ROLE    obj or sky for the fibres on the slit; '-' = not on the slit
+#   LC2     LC connector on the 2-x side (2-1 or 2-2); LC3 the matching 3-x connector
+#   LCNUM   channel number in the LC connectors (the same on the 2-x and 3-x side)
+#   SLIT    Isoplane fibre number = position along the slit, 1-43; '-' = not on the slit
+#
+# Correction to the sheet: hole 23 is labelled F19 there; it is F9 (the .assign.txt files and
+# ICS Positioner_Map.txt give F9 for hole 23 / fibre 39).
+#
+HOLE   LABEL  FIBNUM  LOCKED  ROLE  LC2  LC3  LCNUM SLIT
+1         C4      90       0   obj  2-1  3-1      1    1
+2         C5      20       0   obj  2-1  3-1      2    2
+3         C6      24       1     -    -    -      -    -
+4         D2      69       0   obj  2-1  3-1      3    3
+5         D3      71       0   obj  2-1  3-1      4    4
+6         D4      86       0   obj  2-1  3-1      5    5
+7         D5       2       0   obj  2-1  3-1      6    6
+8         D7      26       0   obj  2-1  3-1      7    7
+9         E2     140       1     -    -    -      -    -
+10        E4      77       1     -    -    -      -    -
+11        E5      10       1     -    -    -      -    -
+12        E6       5       1     -    -    -      -    -
+13        E7      13       1     -    -    -      -    -
+14        E8      35       0   obj  2-1  3-1      8    8
+15        E9      22       0   obj  2-1  3-1      9    9
+16        F2     135       1     -    -    -      -    -
+17        F3     139       1     -    -    -      -    -
+18        F4      70       1     -    -    -      -    -
+19        F5      81       1     -    -    -      -    -
+20        F6       8       1     -    -    -      -    -
+21        F7      14       1     -    -    -      -    -
+22        F8      27       0   obj  2-1  3-1     10   10
+23        F9      39       0   obj  2-1  3-1     11   11
+24       F10      32       0     -    -    -      -    -
+25        G3      66       0   obj  2-1  3-1     12   12
+26        G4     122       0     -    -    -      -    -
+27        G5      76       0   obj  2-1  3-1     13   13
+28        G6      83       0   obj  2-1  3-1     14   14
+29        G7       4       1   sky  2-1  3-1     15   15
+30        G9      11       0   obj  2-1  3-1     16   16
+31       G10      36       0     -    -    -      -    -
+32       G11      33       0     -    -    -      -    -
+33        H3      67       0   obj  2-1  3-1     17   17
+34        H4     133       0   obj  2-1  3-1     18   18
+35        H5     123       0   obj  2-1  3-1     19   19
+36        H6      79       0   obj  2-1  3-1     20   20
+37        H7       9       0   obj  2-1  3-1     21   21
+38        H8      17       1   sky  2-1  3-1     22   22
+39        H9      12       1     -    -    -      -    -
+40       H10      40       1     -    -    -      -    -
+41       H11      31       1     -    -    -      -    -
+42        I2     136       0     -    -    -      -    -
+43        I3     131       0   obj  2-1  3-1     23   23
+44        I5      68       0   obj  2-1  3-1     24   24
+45        I6      84       0   obj  2-1  3-1     25   25
+46        I7       3       0   obj  2-1  3-1     26   26
+47        I8      18       0   obj  2-1  3-1     27   27
+48        I9      23       1     -    -    -      -    -
+49       I10      34       1     -    -    -      -    -
+50        J2     132       0   obj  2-1  3-1     28   28
+51        J3     138       0   obj  2-1  3-1     29   29
+52        J4      75       0   obj  2-1  3-1     30   30
+53        J5      82       0   obj  2-1  3-1     31   31
+54        J6      89       1   sky  2-1  3-1     32   32
+55        J7      19       1     -    -    -      -    -
+56        J8      28       1     -    -    -      -    -
+57        J9      25       1     -    -    -      -    -
+58       J10      37       1     -    -    -      -    -
+59        K2     134       0   obj  2-2  3-2      1   33
+60        K3     137       0   obj  2-2  3-2      2   34
+61        K4      72       0   obj  2-2  3-2      3   35
+62        K5      78       1     -    -    -      -    -
+63        K6       7       1     -    -    -      -    -
+64        K7      15       1     -    -    -      -    -
+65        K9      38       1     -    -    -      -    -
+66        L3      74       0   obj  2-2  3-2      4   36
+67        L5      88       0   obj  2-2  3-2      5   37
+68        L6       1       0   obj  2-2  3-2      6   38
+69        L7      29       0   obj  2-2  3-2      7   39
+70        L8      21       0     -    -    -      -    -
+71        M3      73       0   obj  2-2  3-2      8   40
+72        M4      85       0     -    -    -      -    -
+73        M5       6       0     -    -    -      -    -
+-         B7      63       -   sky  2-2  3-2      9   41
+-         H1      52       -   sky  2-2  3-2     10   42
+-         N7      51       -   sky  2-2  3-2     11   43
