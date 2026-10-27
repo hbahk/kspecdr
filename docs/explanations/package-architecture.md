@@ -15,7 +15,8 @@ src/kspecdr/
 ├── extract/              # Spectral extraction and reduction orchestration
 │   ├── make_ex.py        # Extraction routines (Sum, Tramline)
 │   ├── make_red.py       # Final reduction steps
-│   └── reduce_arc.py     # Arc reduction workflow
+│   ├── reduce_arc.py     # Arc reduction workflow
+│   └── zero_order.py     # Fibre photometry on zero-order (slit image) frames
 ├── fluxcal/              # Flux calibration pipeline
 │   ├── containers.py     # Data containers (Spectrum1D, Photometry, etc.)
 │   ├── photometry.py     # Magnitude conversions and filter handling
@@ -68,6 +69,7 @@ Performs spectral extraction and orchestrates high-level reduction steps.
 *   **`make_ex`**: Extracts 1D spectra from 2D images using the TLM. Supports simple summation and will support optimal extraction.
 *   **`reduce_arc`**: Manages the wavelength calibration workflow, calling `wavecal` functions to derive and apply the wavelength solution.
 *   **`make_red`**: Handles final reduction steps like sky subtraction and flux calibration.
+*   **`zero_order`** (`make_zo`): Measures the flux of every slit fibre on an Isoplane frame taken with the grating at zero order, for focal-plane mapping (positioners scanned around a star). Fibre positions come from spot detection on a zero-order flat, or from that flat's `*_zo.fits` as a reference for star frames.
 
 ### `kspecdr.wavecal`
 Contains the mathematical engines for wavelength calibration.
