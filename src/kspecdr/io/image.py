@@ -64,10 +64,13 @@ class ImageFile:
         if mode is None:
             mode = self.mode
 
+        # No memmap: on Windows, flushing an UPDATE file that grew (an HDU added, e.g. a
+        # fibre table copied from a memory-mapped source) crashes with an access violation
+        # in astropy's flush on close. The frames are small enough to read whole.
         if mode.upper() == "READ":
-            self.hdul = fits.open(self.filename, mode="readonly")
+            self.hdul = fits.open(self.filename, mode="readonly", memmap=False)
         elif mode.upper() == "UPDATE":
-            self.hdul = fits.open(self.filename, mode="update")
+            self.hdul = fits.open(self.filename, mode="update", memmap=False)
         elif mode.upper() == "WRITE":
             self.hdul = fits.open(self.filename, mode="write")
         else:
