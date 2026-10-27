@@ -5,6 +5,7 @@ for a star frame (three fibres lit, slit image shifted), measured in reference m
 Run from kspecdr/: python tests/test_zero_order.py
 """
 
+import json
 import logging
 import os
 import sys
@@ -20,6 +21,7 @@ from kspecdr.extract.zero_order import (  # noqa: E402
     make_zo,
     measure_zero_order,
 )
+from kspecdr.extract.zero_order_frame import _parse_set, zero_order_summary  # noqa: E402
 from kspecdr.tlm.match_fibers import isoplane_nominal_fibpos  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -133,6 +135,22 @@ def test_flat_and_star_frames():
     dark = np.setdiff1d(np.arange(NF), lit)
     ok &= _report("star: dark fibres flagged NODETECT",
                   bool(np.all(star["ZOFLAG"][dark] & ZOFLAG_NODETECT)))
+
+    # JSON summary of the command-line entry point (what the ICS server receives)
+    summary = json.loads(json.dumps(zero_order_summary(star), allow_nan=False))
+    fib = summary["fibres"]
+    ok &= _report("summary: method cards and one list per column",
+                  summary["method"] == "REFERENCE" and summary["nfib"] == NF
+                  and summary["ndet"] == len(det) and all(len(v) == NF for v in fib.values()))
+    ok &= _report("summary: values match the table",
+                  np.allclose(fib["flux"], star["FLUX"])
+                  and np.allclose(np.square(fib["flux_err"]), star["FLUX_VAR"])
+                  and fib["type"] == ["P"] * NF and fib["fibno"] == list(range(1, NF + 1)))
+    ok &= _report("summary: --set values parsed as JSON",
+                  _parse_set(["iso_fib_pitch=6.74", "ZO_REF_FILENAME=a_zo.fits",
+                              "ISO_FIB_GAPS={\"11\": 12}"])
+                  == {"ISO_FIB_PITCH": 6.74, "ZO_REF_FILENAME": "a_zo.fits",
+                      "ISO_FIB_GAPS": {"11": 12}})
     return ok
 
 
