@@ -50,9 +50,16 @@ def validate_files_exist(
 def validate_reduce_object_args(args: Dict[str, Any]) -> None:
     """
     Sanity checks matching 2dfdr REDUCE_OBJECT_ARG_CHECKS.
+
+    Unlike 2dfdr, ``FFLAT_FILENAME`` is required only with ``USEFFLAT=True`` (the default);
+    with ``USEFFLAT=False`` it is checked only if given.
     """
-    required = ("TLMAP_FILENAME", "WAVEL_FILENAME", "FFLAT_FILENAME")
+    required = ("TLMAP_FILENAME", "WAVEL_FILENAME")
+    if args.get("USEFFLAT", True):
+        required += ("FFLAT_FILENAME",)
     validate_files_exist(args, required, required=True)
+    if not args.get("USEFFLAT", True):
+        validate_files_exist(args, ("FFLAT_FILENAME",), required=False)
 
     if args.get("USEDARKIM", False) and args.get("DARK_FILENAME"):
         validate_files_exist(args, ("DARK_FILENAME",), required=True)
