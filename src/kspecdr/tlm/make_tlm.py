@@ -20,6 +20,7 @@ from scipy.cluster.hierarchy import linkage, fcluster
 
 from kspecdr.tracking import multi_target_tracking
 from kspecdr.io.image import ImageFile
+from .sigma_profile import sigma_profile
 from .match_fibers import (
     taipan_nominal_fibpos,
     match_fibers_taipan,
@@ -47,6 +48,8 @@ from ..utils.fiber import get_override_from_args
 
 logger = logging.getLogger(__name__)
 
+MWIDTH_DEFAULT = 1.9  # px, 2dfdr-style placeholder when the flat profile is not measured
+
 
 def make_tlm(args: Dict[str, Any]) -> None:
     """
@@ -72,6 +75,10 @@ def make_tlm(args: Dict[str, Any]) -> None:
           one-pitch ambiguity on a uniform slit
         - 'ISO_MATCH_TOL': Isoplane largest accepted trace-to-model distance in pixels
           (default: 0.35 x the smallest nominal step)
+        - 'SIGPROF': on an MFFFF frame, measure the profile sigma of every fibre and column
+          and store it as the ``SIGMAPRF`` HDU for optimal extraction (default False; see
+          ``write_profile_widths``). ``MWIDTH`` is measured on any MFFFF frame.
+        - 'SIGPROF_ORDER': polynomial order of sigma along the dispersion (default 3)
     """
     args = init_args(args)
     im_fname = args.get("IMAGE_FILENAME")
@@ -215,6 +222,9 @@ def make_tlm_other(
     matched = match_vector > 0
     fibre_xrange[matched] = trace_xrange[match_vector[matched] - 1]
     write_trace_support(tlm_fname, fibre_xrange, nspec)
+
+    # Step 11: Fibre profile widths (MWIDTH; SIGMAPRF with SIGPROF)
+    write_profile_widths(tlm_fname, im_file, img_data, var_data, tramline_map.T, matched, args)
 
     logger.info("Tramline map generation completed")
 
@@ -1280,8 +1290,8 @@ def write_tramline_data(
 
     # Add header keywords
     hdu.header["INSTRUME"] = f"INST_{instrument_code}"
-    hdu.header["MWIDTH"] = 1.9  # TODO: pass from separate analysis, not hardcoded
-    hdu.header["PSF_TYPE"] = "GAUSS" # TODO: pass from separate analysis, not hardcoded
+    hdu.header["MWIDTH"] = (MWIDTH_DEFAULT, "Median profile FWHM [px], default")
+    hdu.header["PSF_TYPE"] = "GAUSS"
     hdu.header["LAMBDAC"] = im_file.get_header_value("LAMBDAC", None)
     hdu.header["DISPERS"] = im_file.get_header_value("DISPERS", None)
     hdu.header["GRATID"] = im_file.get_header_value("GRATID", None)
@@ -1495,6 +1505,80 @@ def write_trace_support(tlm_fname: str, fibre_xrange: np.ndarray, nspec: int) ->
             hdr["TLMXMIN"], hdr["TLMXMAX"], int(measured.sum()), hdr["TLMXLO"], hdr["TLMXHI"],
             nspec - (hdr["TLMXMAX"] - hdr["TLMXMIN"] + 1), nspec,
         )
+
+
+def write_profile_widths(
+    tlm_fname: str,
+    im_file: ImageFile,
+    img_data: np.ndarray,
+    var_data: Optional[np.ndarray],
+    tlm: np.ndarray,
+    measured: np.ndarray,
+    args: Dict[str, Any],
+) -> None:
+    """
+    Measure the fibre profile widths of a flat and record them in the tramline map.
+
+    Port of the ``SIGPROF`` branch of 2dfdr ``MAKE_TLM`` (``SIGMA_PROFILE`` then
+    ``TDFIO_TSIG_WRITE``). Only MFFFF frames (``NDFCLASS``, else ``CLASS``) are measured;
+    others keep ``MWIDTH = MWIDTH_DEFAULT``.
+
+    - ``MWIDTH``: median FWHM in pixels (2.3548 x sigma) of the accepted slice measurements.
+      Without ``SIGPROF`` it comes from a coarse grid of 12 slices.
+    - ``SIGMAPRF`` HDU (``SIGPROF=True``): sigma per fibre and column, shape (nfib, nspec),
+      of a pixel-integrated Gaussian (see ``kspecdr.tlm.sigma_profile``).
+
+    Parameters
+    ----------
+    tlm_fname : str
+        Tramline map filename (updated in place).
+    im_file : ImageFile
+        The flat the tramlines were traced on.
+    img_data, var_data : np.ndarray
+        Its image and variance, shape (nspat, nspec).
+    tlm : np.ndarray
+        Tramline map, shape (nfib, nspec).
+    measured : np.ndarray
+        Bool (nfib,): fibres with a measured trace.
+    args : dict
+        Method arguments (``SIGPROF``, ``SIGPROF_ORDER``).
+    """
+    from astropy.io import fits
+
+    ndfclass = im_file.get_header_value("NDFCLASS", None) or im_file.get_header_value(
+        "CLASS", ""
+    )
+    sigprof = bool(args.get("SIGPROF", False))
+    if not str(ndfclass).upper().startswith("MFFFF"):
+        if sigprof:
+            logger.warning("SIGPROF needs an MFFFF frame (class %r): no SIGMAPRF", ndfclass)
+        return
+
+    nspec = img_data.shape[1]
+    col_step = 20 if sigprof else max(nspec // 12, 1)
+    try:
+        sigma, info = sigma_profile(
+            img_data, tlm, var_data, measured=measured, col_step=col_step,
+            order=int(args.get("SIGPROF_ORDER", 3)),
+        )
+    except ValueError as exc:
+        logger.warning("Profile widths not measured (%s); MWIDTH stays %.2f", exc, MWIDTH_DEFAULT)
+        return
+
+    with fits.open(tlm_fname, mode="update") as hdul:
+        hdr = hdul[0].header
+        hdr["MWIDTH"] = (round(info["mwidth"], 4), "Median profile FWHM [px], measured")
+        if sigprof:
+            hdu = fits.ImageHDU(sigma.astype(np.float32), name="SIGMAPRF")
+            hdu.header["SIGMODEL"] = ("PIXGAUSS", "Sigma of a pixel-integrated Gaussian")
+            hdu.header["SIGORDER"] = (int(args.get("SIGPROF_ORDER", 3)), "Poly order along x")
+            hdu.header["SIGNSLIC"] = (len(info["cols"]), "Median slices measured")
+            hdu.header["SIGCSTEP"] = (col_step, "Column step of the slices")
+            hdu.header["SIGNFIT"] = (int(info["fitted"].sum()), "Fibres with own sigma fit")
+            if "SIGMAPRF" in hdul:
+                del hdul["SIGMAPRF"]
+            hdul.append(hdu)
+        hdul.flush()
 
 
 def write_wavelength_data(tlm_fname: str, wavelength_data: np.ndarray) -> None:
