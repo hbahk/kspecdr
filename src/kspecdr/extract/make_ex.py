@@ -16,7 +16,9 @@ import warnings
 
 from ..io.image import ImageFile
 from ..tlm.make_tlm import TLM_SUPPORT_KEYS, predict_wavelength
+from ..tlm.sigma_profile import FWHM_PER_SIGMA
 from ..utils.fiber import get_override_from_args
+from .optimal import optimal_extract
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,25 @@ def make_ex(args: Dict[str, Any]) -> None:
         - IMAGE_FILENAME: Input image file
         - EXTRAC_FILENAME: Output extracted file
         - TLMAP_FILENAME: Tramline map file
-        - WTSCHEME: Weighting scheme (optional)
+        - WTSCHEME: Weighting scheme (optional): 'STND' (1/variance, default) or 'NONE'
+        - EXTR_OPERATION: 'SUM' (default 'TRAM' runs SUM) or 'OPTEX'
+        - SUM_WIDTH: SUM window width in pixels (default 10)
+
+        OPTEX options (2dfdr names unless noted; see :func:`kspecdr.extract.optimal`):
+
+        - SIGPROF: use the ``SIGMAPRF`` profile widths of the tramline map (default False:
+          ``MWIDTH / 2.3548`` for every fibre and column)
+        - PSF_TYPE: profile model, only 'GAUSS'
+        - OPTEX_NSLPARS: scattered-light terms per column (default 1, a constant)
+        - OPTEX_SLMODEL: 'POLYN' (Chebyshev, default) or 'KNOTS' (piecewise linear with
+          knots between the fibres; kspecdr)
+        - OPTEX_NITER: number of fits per column (kspecdr; default 2 when the image has
+          ``RO_GAIN``: the second fit uses the model variance)
+        - OPTEX_CLIP: cosmic-ray rejection threshold in sigma (kspecdr; default 0 = off)
+        - OPTEX_PRFERR: fractional profile error in the rejection threshold (kspecdr;
+          default 0.02)
+        - OPTEX_MKRES: also write ``<EXTRAC_FILENAME stem>_res.fits`` with the residual,
+          model and scattered-light images (default False)
     """
     im_fname = args.get("IMAGE_FILENAME")
     ex_fname = args.get("EXTRAC_FILENAME")
@@ -103,6 +123,7 @@ def make_ex_from_im(
     with ImageFile(im_fname, mode="READ") as im_file:
         im_class = im_file.get_header_value("CLASS", "UNKNOWN")
         instrument_code = im_file.get_instrument_code()
+        ro_gain = im_file.get_header_value("RO_GAIN", None)
 
         img_data = im_file.read_image_data()
         var_data = im_file.read_variance_data()
@@ -121,6 +142,8 @@ def make_ex_from_im(
 
             # Get MWIDTH from TLM header (Median FWHM)
             mwidth = float(tlm_file.get_header_value("MWIDTH", 2.0))
+            tlm_hdr = tlm_file.hdul[0].header
+            mwidth_measured = "MWIDTH" in tlm_hdr and "measured" in tlm_hdr.comments["MWIDTH"]
 
             # Read Wavelength data if available
             wave_data = tlm_file.read_wave_data()
@@ -223,9 +246,39 @@ def make_ex_from_im(
         )
         raise NotImplementedError("GAUSS extraction not implemented")
 
-    elif operat in ["OPTEX", "SMCOPTEX"]:
-        # Placeholder for Optimal Extraction
-        raise NotImplementedError("Optimal extraction not implemented")
+    elif operat == "OPTEX":
+        psf_type = str(args.get("PSF_TYPE", "GAUSS")).upper()
+        if psf_type != "GAUSS":
+            raise NotImplementedError(f"PSF_TYPE {psf_type!r} not implemented (only GAUSS)")
+        sigma, sig_source = read_profile_sigma(
+            tlm_fname, nfib, nspec, mwidth, bool(args.get("SIGPROF", False))
+        )
+        if sig_source == "MWIDTH" and not mwidth_measured:
+            logger.warning(
+                f"OPTEX: MWIDTH = {mwidth} in {tlm_fname} was not measured on a flat; "
+                "remake the tramline map from the fibre flat (make_tlm, SIGPROF=True)"
+            )
+        gain = float(ro_gain) if ro_gain is not None else None
+        niter = int(args.get("OPTEX_NITER", 2 if gain is not None else 1))
+        mkres = bool(args.get("OPTEX_MKRES", False))
+        optex_pars = dict(
+            nslpars=int(args.get("OPTEX_NSLPARS", 1)),
+            slmodel=str(args.get("OPTEX_SLMODEL", "POLYN")).upper(),
+            wtscheme=wtscheme,
+            gain=gain,
+            niter=niter,
+            clip=float(args.get("OPTEX_CLIP", 0.0)),
+            prferr=float(args.get("OPTEX_PRFERR", 0.02)),
+        )
+        logger.info(f"Performing OPTEX extraction, sigma from {sig_source}: {optex_pars}")
+        flux, fvar, optex_info = optimal_extract(
+            img_data, var_data, tlm_data, sigma, return_model=mkres, **optex_pars
+        )
+        ex_img[:] = flux.T
+        ex_var[:] = fvar.T
+
+    elif operat == "SMCOPTEX":
+        raise NotImplementedError("SMCOPTEX not implemented; use OPTEX")
 
     else:
         raise ValueError(f"Unknown operation: {operat}")
@@ -259,6 +312,17 @@ def make_ex_from_im(
 
     # Update Header
     header["HISTORY"] = f"Extracted using {operat}"
+    if operat == "OPTEX":
+        header["OPTSIGSR"] = (sig_source, "OPTEX profile sigma source")
+        header["OPTSLMOD"] = (optex_pars["slmodel"], "OPTEX scattered-light model")
+        header["OPTNSLP"] = (optex_pars["nslpars"], "OPTEX scattered-light terms")
+        header["OPTNITER"] = (niter, "OPTEX fits per column")
+        header["OPTCLIP"] = (optex_pars["clip"], "OPTEX CR clip [sigma], 0 = off")
+        header["OPTNREJ"] = (int(optex_info["nrej"].sum()), "OPTEX rejected pixels")
+        header["OPTCHI2"] = (
+            round(float(np.nanmedian(optex_info["chi2"])), 4),
+            "OPTEX median reduced chi2 per column",
+        )
 
     # Carry the measured trace range of the tramline map (columns outside are extrapolated)
     with fits.open(tlm_fname) as hdul_tlm:
@@ -297,6 +361,74 @@ def make_ex_from_im(
     hdul_out.writeto(ex_fname, overwrite=True)
     hdul_out.close()
     logger.info(f"Written extracted file: {ex_fname}")
+
+    if operat == "OPTEX" and mkres:
+        write_optex_residuals(ex_fname, img_data, optex_info, header)
+
+
+def read_profile_sigma(
+    tlm_fname: str, nfib: int, nspec: int, mwidth: float, sigprof: bool
+) -> Tuple[np.ndarray, str]:
+    """
+    Profile sigma per fibre and column for OPTEX, as 2dfdr ``MAKE_EX``.
+
+    With ``sigprof`` and a ``SIGMAPRF`` HDU in the tramline map, its values are used and
+    those below 0.5 px (or non-finite) are replaced by ``MWIDTH / 2.3548``; otherwise that
+    constant is used everywhere.
+
+    Returns
+    -------
+    sigma : np.ndarray
+        Shape (nfib, nspec).
+    source : str
+        'SIGMAPRF' or 'MWIDTH'.
+    """
+    from astropy.io import fits
+
+    sigma0 = mwidth / FWHM_PER_SIGMA
+    if sigprof:
+        with fits.open(tlm_fname) as hdul:
+            if "SIGMAPRF" in hdul:
+                sigma = np.asarray(hdul["SIGMAPRF"].data, dtype=float)
+                if sigma.shape != (nfib, nspec):
+                    raise ValueError(
+                        f"SIGMAPRF shape {sigma.shape} does not match ({nfib}, {nspec})"
+                    )
+                return np.where(np.isfinite(sigma) & (sigma >= 0.5), sigma, sigma0), "SIGMAPRF"
+        logger.warning(f"SIGPROF set but {tlm_fname} has no SIGMAPRF; using MWIDTH = {mwidth}")
+    return np.full((nfib, nspec), sigma0), "MWIDTH"
+
+
+def write_optex_residuals(
+    ex_fname: str, img_data: np.ndarray, info: Dict[str, Any], header: Any
+) -> None:
+    """
+    Write the OPTEX residual diagnostics (2dfdr ``OPTEX_MKRES``) next to the EX file.
+
+    ``<stem>_res.fits``: PRIMARY = image - model, ``MODEL`` (fibre profiles plus scattered
+    light) and ``SCATLITE`` (scattered-light model), all (nspat, nspec) and NaN outside the
+    fitted rows, and ``REJECTED`` (1 = pixel rejected by ``OPTEX_CLIP``).
+    """
+    from astropy.io import fits
+
+    stem = str(ex_fname)
+    stem = stem[: -len(".fits")] if stem.endswith(".fits") else stem
+    stem = stem[: -len("_ex")] if stem.endswith("_ex") else stem
+    res_fname = f"{stem}_res.fits"
+    model = info["model"]
+    hdr = header.copy()
+    for key in ("CTYPE1", "CUNIT1", "CTYPE2"):
+        hdr.remove(key, ignore_missing=True)
+    hdul = fits.HDUList(
+        [
+            fits.PrimaryHDU(data=(img_data - model).astype(np.float32), header=hdr),
+            fits.ImageHDU(data=model.astype(np.float32), name="MODEL"),
+            fits.ImageHDU(data=info["background"].astype(np.float32), name="SCATLITE"),
+            fits.ImageHDU(data=info["rejected"].astype(np.uint8), name="REJECTED"),
+        ]
+    )
+    hdul.writeto(res_fname, overwrite=True)
+    logger.info(f"Written OPTEX residual file: {res_fname}")
 
 
 def sum_extract(

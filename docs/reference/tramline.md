@@ -8,4 +8,7 @@ Tramline map (TLM) generation: detecting fibre traces on the detector, linking t
 
 .. automodule:: kspecdr.tlm.match_fibers
    :members:
+
+.. automodule:: kspecdr.tlm.sigma_profile
+   :members:
 ```

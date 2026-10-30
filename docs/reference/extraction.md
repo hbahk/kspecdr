@@ -6,6 +6,9 @@ Spectral extraction from 2D images to 1D spectra, plus top-level orchestration m
 .. automodule:: kspecdr.extract.make_ex
    :members:
 
+.. automodule:: kspecdr.extract.optimal
+   :members:
+
 .. automodule:: kspecdr.extract.make_red
    :members:
 

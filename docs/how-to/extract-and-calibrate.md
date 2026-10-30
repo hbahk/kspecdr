@@ -28,6 +28,37 @@ make_ex(
 )
 ```
 
+### Optimal extraction (OPTEX)
+
+`EXTR_OPERATION="OPTEX"` fits the Gaussian profiles of all fibres plus a scattered-light
+term column by column (port of 2dfdr OPTEX). It needs the profile widths of the fibre flat:
+make the tramline map from the flat with `SIGPROF=True` (writes the `SIGMAPRF` HDU and the
+measured `MWIDTH`) and pass `SIGPROF=True` to `make_ex` as well. OPTEX is sensitive to
+trace-centre errors, so frames whose traces have moved relative to the flat need
+`TLM_SHIFT` (pixels).
+
+```python
+make_tlm({"IMAGE_FILENAME": "work/flat_001_im.fits",
+          "TLMAP_FILENAME": "work/flat_001_tlm.fits", "SIGPROF": True})
+
+make_ex(
+    {
+        "IMAGE_FILENAME": "work/object_001_im.fits",
+        "TLMAP_FILENAME": "work/flat_001_tlm.fits",
+        "EXTRAC_FILENAME": "work/object_001_ex.fits",
+        "EXTR_OPERATION": "OPTEX",
+        "SIGPROF": True,
+        "OPTEX_NSLPARS": 1,  # constant scattered-light term per column
+        "OPTEX_CLIP": 5.0,  # reject cosmic rays and hot pixels (object frames only)
+        "OPTEX_NITER": 4,
+    }
+)
+```
+
+Keep `OPTEX_CLIP` off for flats and arcs: their profiles differ from the Gaussian by more
+than the noise, so the rejection would remove real light. `OPTEX_MKRES=True` writes
+`work/object_001_res.fits` with the residual, model and rejected-pixel images.
+
 ## 2. Run arc wavelength calibration
 
 ```python
