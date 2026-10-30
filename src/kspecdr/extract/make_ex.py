@@ -17,10 +17,15 @@ import warnings
 from ..io.image import ImageFile
 from ..tlm.make_tlm import TLM_SUPPORT_KEYS, predict_wavelength
 from ..tlm.sigma_profile import FWHM_PER_SIGMA
+from ..tlm.tlm_creep import measure_tlm_shift
 from ..utils.fiber import get_override_from_args
 from .optimal import optimal_extract
 
 logger = logging.getLogger(__name__)
+
+# Frame classes whose trace shift is measured with MSR_TLM_CREEP (2dfdr: MFOBJECT, MFSKY,
+# MFARC; the Isoplane converter writes OBJECT for science frames)
+CREEP_CLASSES = ("MFOBJECT", "MFSKY", "MFARC", "OBJECT", "SKY", "ARC")
 
 # Constants
 MAX_NFIBRES = 1000
@@ -42,6 +47,13 @@ def make_ex(args: Dict[str, Any]) -> None:
         - WTSCHEME: Weighting scheme (optional): 'STND' (1/variance, default) or 'NONE'
         - EXTR_OPERATION: 'SUM' (default 'TRAM' runs SUM) or 'OPTEX'
         - SUM_WIDTH: SUM window width in pixels (default 10)
+        - TLM_SHIFT: shift added to the tramline map, in pixels (default 0)
+        - MSR_TLM_CREEP: measure the shift of the frame's traces against the tramline map
+          (2dfdr ``MEASURE_TLM_SHIFT``, :func:`kspecdr.tlm.tlm_creep.measure_tlm_shift`) on
+          object, sky and arc frames; it overrides TLM_SHIFT, which remains the fallback when
+          the measurement fails (default False)
+        - TLM_INIT_SHIFT: centre of the searched shift range, in pixels (default 0; the
+          search covers +-2.5 px)
 
         OPTEX options (2dfdr names unless noted; see :func:`kspecdr.extract.optimal`):
 
@@ -121,7 +133,9 @@ def make_ex_from_im(
 
     # 2. Open Image File
     with ImageFile(im_fname, mode="READ") as im_file:
-        im_class = im_file.get_header_value("CLASS", "UNKNOWN")
+        im_class = str(
+            im_file.get_header_value("NDFCLASS", "") or im_file.get_header_value("CLASS", "")
+        ).strip().upper()
         instrument_code = im_file.get_instrument_code()
         ro_gain = im_file.get_header_value("RO_GAIN", None)
 
@@ -194,8 +208,24 @@ def make_ex_from_im(
                 )
                 wave_data = predict_wavelength(im_file, tlm_data.T, args).T
 
-    # 4. Apply TLM Shift (Shift-Rotate-Tweak)
+    # 4. Apply TLM Shift (Shift-Rotate-Tweak), measured with MSR_TLM_CREEP
     tlm_shift = float(args.get("TLM_SHIFT", 0.0))
+    creep = None
+    if bool(args.get("MSR_TLM_CREEP", False)):
+        if im_class in CREEP_CLASSES:
+            sigma_creep, _ = read_profile_sigma(
+                tlm_fname, nfib, tlm_data.shape[1], mwidth, bool(args.get("SIGPROF", False))
+            )
+            measured, creep = measure_tlm_shift(
+                img_data, var_data, tlm_data, sigma_creep,
+                init_shift=float(args.get("TLM_INIT_SHIFT", 0.0)),
+            )
+            if np.isfinite(measured):
+                tlm_shift = measured
+            else:
+                logger.warning(f"Keeping TLM_SHIFT = {tlm_shift} after the failed measurement")
+        else:
+            logger.info(f"Not measuring the TLM shift on a frame of class {im_class!r}")
     if tlm_shift != 0.0:
         logger.info(f"Shifting Tramline Map by {tlm_shift} pixels")
         tlm_data += tlm_shift
@@ -312,6 +342,13 @@ def make_ex_from_im(
 
     # Update Header
     header["HISTORY"] = f"Extracted using {operat}"
+    header["TLMSHIFT"] = (round(tlm_shift, 4), "Shift applied to the tramline map [px]")
+    if creep is not None:
+        header["TLMSHERR"] = (
+            round(creep["err"], 4) if np.isfinite(creep["err"]) else -1.0,
+            "Error of the measured TLM shift [px]",
+        )
+        header["TLMSHN"] = (creep["nused"], "Block profiles used for the TLM shift")
     if operat == "OPTEX":
         header["OPTSIGSR"] = (sig_source, "OPTEX profile sigma source")
         header["OPTSLMOD"] = (optex_pars["slmodel"], "OPTEX scattered-light model")

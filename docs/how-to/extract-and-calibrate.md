@@ -34,8 +34,11 @@ make_ex(
 term column by column (port of 2dfdr OPTEX). It needs the profile widths of the fibre flat:
 make the tramline map from the flat with `SIGPROF=True` (writes the `SIGMAPRF` HDU and the
 measured `MWIDTH`) and pass `SIGPROF=True` to `make_ex` as well. OPTEX is sensitive to
-trace-centre errors, so frames whose traces have moved relative to the flat need
-`TLM_SHIFT` (pixels).
+trace-centre errors: a trace 0.5 px off loses ~5 % of the flux, 1.2 px ~35 %. Object, sky
+and arc frames whose traces have moved relative to the flat should be extracted with
+`MSR_TLM_CREEP=True`, which measures the shift against the tramline map (written to the
+`TLMSHIFT` header keyword); `TLM_SHIFT` sets it by hand and is the fallback when the
+measurement fails, `TLM_INIT_SHIFT` centres the ±2.5 px search.
 
 ```python
 make_tlm({"IMAGE_FILENAME": "work/flat_001_im.fits",
@@ -48,6 +51,7 @@ make_ex(
         "EXTRAC_FILENAME": "work/object_001_ex.fits",
         "EXTR_OPERATION": "OPTEX",
         "SIGPROF": True,
+        "MSR_TLM_CREEP": True,  # measure the trace shift against the flat's TLM
         "OPTEX_NSLPARS": 1,  # constant scattered-light term per column
         "OPTEX_CLIP": 5.0,  # reject cosmic rays and hot pixels (object frames only)
         "OPTEX_NITER": 4,
