@@ -28,6 +28,11 @@ make_ex(
 )
 ```
 
+`SUM` adds the pixels within `SUM_WIDTH / 2` of each tramline (pixel `k` spans
+`[k - 0.5, k + 0.5]`, partial pixels weighted by their fraction). On a slit where
+`SUM_WIDTH` exceeds the fibre pitch, each window also takes in its neighbours' profile wings,
+so keep it at or below the pitch, or use OPTEX for object frames.
+
 ### Optimal extraction (OPTEX)
 
 `EXTR_OPERATION="OPTEX"` fits the Gaussian profiles of all fibres plus a scattered-light

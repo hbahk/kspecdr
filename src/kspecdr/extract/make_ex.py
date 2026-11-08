@@ -10,8 +10,6 @@ import sys
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, Union
 from pathlib import Path
-from tqdm import tqdm
-from tqdm.contrib.logging import logging_redirect_tqdm
 import warnings
 
 from ..io.image import ImageFile
@@ -483,6 +481,13 @@ def sum_extract(
     Perform simple summing extraction.
     Replaces 2dfdr SUBROUTINE SUMEXTR.
 
+    Sums the image over a window of ``width`` pixels centred on each tramline, with
+    fractional weights for the two partial pixels at the window edges. Pixel ``k`` spans
+    ``[k - 0.5, k + 0.5]``, the convention of the tramline map (0-based pixel centres) and of
+    the OPTEX profiles. The variance of a partial pixel is weighted by the square of its
+    fraction (2dfdr ``SUMEXTR`` adds ``INVAR * PART``). A window touching a bad (NaN) pixel,
+    or lying entirely off the detector, gives NaN.
+
     Parameters
     ----------
     nspat : int
@@ -500,158 +505,31 @@ def sum_extract(
     nfib : int
         Number of fibers
     tlmap : np.ndarray
-        Tramline map (NSPEC, NFIB)
+        Tramline map (NSPEC, NFIB), 0-based pixel centres
     width : float
-        Width of extraction window
+        Width of extraction window in pixels
     """
-
-    # Loop over spectral pixels (columns)
-    with logging_redirect_tqdm():
-        for j in tqdm(range(nspec), desc="Summing extraction", unit="pixel"):
-            # Loop over fibers
-            for fibre in range(nfib):
-                # Get center of fiber profile from TLM
-                # 2dfdr adds TRAMLINE_OFFSET (usually 0.0 or 0.5 depending on convention)
-                # Python/Numpy 0-based vs Fortran 1-based.
-                # If TLM is 1-based (from Fortran 2dfdr), we might need to adjust.
-                # Assuming TLM data is already converted to 0-based pixel coordinates?
-                # Or if it's FITS pixel coordinates (1-based), we need to subtract 1?
-                # Let's assume TLM values are 0-based pixel coordinates for now (standard python practice),
-                # or FITS convention (1-based).
-                # If FITS convention: center = tlm_val - 1.0
-                # Let's stick to the raw value for now, assuming TLM matches image grid.
-
-                tlm_pt = tlmap[j, fibre]
-
-                # 2dfdr: TLMPT = TLMAP(J,FIBRE) + TRAMLINE_OFFSET
-                # If we assume 0-based, no offset needed if TLM is correct.
-
-                tlow = tlm_pt - width / 2.0
-                thigh = tlm_pt + width / 2.0
-
-                # Convert to integer indices
-                # 2dfdr: ILOW = INT(TLOW) + 1  (1-based)
-                # Python: ilow = int(floor(tlow))?
-                # Pixel i covers [i-0.5, i+0.5]? Or [i, i+1]?
-                # 2dfdr logic implies pixel centers.
-                # Let's use standard partial pixel integration.
-
-                ilow = int(np.floor(tlow))
-                ihigh = int(np.floor(thigh))
-
-                # Clip to image boundaries
-                ilow = max(0, ilow)
-                ihigh = min(nspat - 1, ihigh)
-
-                tot_pix = 0.0
-                tot_var = 0.0
-
-                # Check for bad pixels in the full pixels range
-                # Range is inclusive of ilow, inclusive of ihigh?
-                # 2dfdr: DO PIX=ILOW,IHIGH (inclusive)
-                # But wait, logic for partials:
-                # IF ILOW > 1 ... ADD PARTIAL LOW
-                # IF IHIGH < NSPAT ... ADD PARTIAL HIGH
-                # The Loop is for "whole pixels" fully inside?
-                # 2dfdr: ILOW = INT(TLOW) + 1.
-                # e.g. TLOW = 5.5 -> ILOW = 6.
-                # Pixel 6 is fully inside?
-                #
-                # Let's implement robust partial pixel summation.
-                # Range [tlow, thigh].
-                # Integrate flux from tlow to thigh.
-                # Assuming pixels are boxcars centered at integer coordinates?
-                # Or centered at int+0.5?
-                # 2dfdr convention: Pixel coordinates are usually 0.5 to N+0.5?
-                #
-                # Let's simplify:
-                # Sum pixels from ceil(tlow) to floor(thigh).
-                # Add partial fraction of floor(tlow) and ceil(thigh).
-
-                # 2dfdr SUMEXTR Implementation translated:
-
-                # Bounds check
-                if ihigh < ilow:
-                    # Window is too small or out of bounds
-                    outdat[j, fibre] = VAL__BADR
-                    outvar[j, fibre] = VAL__BADR
-                    continue
-
-                bad_pixel = False
-
-                # Sum whole pixels (or mostly whole)
-                # In 2dfdr, loop is ILOW to IHIGH.
-                # 2dfdr ILOW calculation: INT(TLOW) + 1.
-                # If TLOW=5.1, ILOW=6. Pixel 6 is included.
-                # But Pixel 5 is partial.
-                # So loop covers "inner" pixels.
-
-                # Python equivalent:
-                # range(ilow_idx, ihigh_idx + 1)
-                # where ilow_idx is index of first FULL pixel > tlow.
-                # ihigh_idx is index of last FULL pixel < thigh.
-
-                start_full = int(np.ceil(tlow))  # e.g. 5.1 -> 6
-                end_full = int(np.floor(thigh))  # e.g. 9.9 -> 9
-
-                # Sum Full Pixels
-                # Note: 2dfdr logic for ILOW/IHIGH is slightly different, let's stick to first principles
-                # or exact translation.
-
-                current_flux = 0.0
-                current_var = 0.0
-
-                # Iterate through all pixels touched
-                p_start = int(np.floor(tlow))
-                p_end = int(np.floor(thigh))  # Note: thigh is upper bound
-
-                # Cap at image edges
-                p_start = max(0, p_start)
-                p_end = min(nspat - 1, p_end)
-
-                for pix in range(p_start, p_end + 1):
-                    # Calculate fraction of pixel included
-                    # Pixel covers [pix, pix+1] (assuming 0-based corner? Or center?)
-                    # If center is pix, range is [pix-0.5, pix+0.5].
-                    # 2dfdr usually assumes pixel centers are integers 1, 2, ...
-                    # Let's assume standard FITS: pixel centers are 1.0, 2.0.
-                    # Python 0-based: centers are 0.0, 1.0?
-                    # Actually, typically [x, x+1] is the range for pixel x.
-
-                    # Let's assume pixel `pix` covers spatial range [pix, pix+1].
-                    pix_min = float(pix)
-                    pix_max = float(pix) + 1.0
-
-                    # Intersection of [pix_min, pix_max] and [tlow, thigh]
-                    overlap_min = max(pix_min, tlow)
-                    overlap_max = min(pix_max, thigh)
-
-                    if overlap_max > overlap_min:
-                        fraction = overlap_max - overlap_min
-
-                        val = indat[pix, j]
-                        var = invar[pix, j]
-
-                        if np.isnan(val) or np.isnan(var):
-                            bad_pixel = True
-                            break
-
-                        current_flux += val * fraction
-                        current_var += var * fraction  # Linear variance scaling?
-                        # 2dfdr: TOTVAR = TOTVAR+INVAR(ILOW-1,J)*PART
-                        # Yes, it scales variance by fraction?
-                        # Actually variance of (A*x) is A^2 * Var(x).
-                        # 2dfdr seems to just use fraction?
-                        # "TOTVAR = TOTVAR+INVAR(ILOW-1,J)*PART"
-                        # This implies Var(fraction * Pixel) = fraction * Var(Pixel).
-                        # This is correct if we are summing 'fraction' of the Poisson counts?
-                        # No, strictly Var(c*X) = c^2 * Var(X).
-                        # But 2dfdr does linear. Let's replicate 2dfdr behavior for now.
-                        # Warning: 2dfdr might be doing 'counts' scaling.
-
-                if bad_pixel:
-                    outdat[j, fibre] = VAL__BADR
-                    outvar[j, fibre] = VAL__BADR
-                else:
-                    outdat[j, fibre] = current_flux
-                    outvar[j, fibre] = current_var
+    cols = np.arange(nspec)
+    half = width / 2.0
+    # Row offsets around each centre that can overlap the window
+    offsets = np.arange(-int(np.ceil(half)) - 1, int(np.ceil(half)) + 2)
+    for fibre in range(nfib):
+        centre = tlmap[:, fibre].astype(float)
+        ok = np.isfinite(centre)
+        base = np.floor(np.where(ok, centre, 0.0)).astype(int)
+        rows = base[None, :] + offsets[:, None]  # (noff, nspec)
+        lo = centre[None, :] - half
+        hi = centre[None, :] + half
+        frac = np.clip(np.minimum(rows + 0.5, hi) - np.maximum(rows - 0.5, lo), 0.0, 1.0)
+        on_chip = (rows >= 0) & (rows < nspat)
+        frac = np.where(on_chip & ok[None, :], frac, 0.0)
+        r = np.clip(rows, 0, nspat - 1)
+        val = indat[r, cols[None, :]]
+        var = invar[r, cols[None, :]]
+        used = frac > 0
+        bad = np.any(used & ~(np.isfinite(val) & np.isfinite(var)), axis=0)
+        bad |= ~np.any(used, axis=0)
+        flux = np.sum(np.where(used, val * frac, 0.0), axis=0)
+        fvar = np.sum(np.where(used, var * frac**2, 0.0), axis=0)
+        outdat[:, fibre] = np.where(bad, VAL__BADR, flux)
+        outvar[:, fibre] = np.where(bad, VAL__BADR, fvar)
