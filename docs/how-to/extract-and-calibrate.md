@@ -34,7 +34,7 @@ make_ex(
 term column by column (port of 2dfdr OPTEX). It needs the profile widths of the fibre flat:
 make the tramline map from the flat with `SIGPROF=True` (writes the `SIGMAPRF` HDU and the
 measured `MWIDTH`) and pass `SIGPROF=True` to `make_ex` as well. OPTEX is sensitive to
-trace-centre errors: a trace 0.5 px off loses ~5 % of the flux, 1.2 px ~35 %. Object, sky
+trace-centre errors: a trace off by a fraction of a pixel already loses flux. Object, sky
 and arc frames whose traces have moved relative to the flat should be extracted with
 `MSR_TLM_CREEP=True`, which measures the shift against the tramline map (written to the
 `TLMSHIFT` header keyword); `TLM_SHIFT` sets it by hand and is the fallback when the
