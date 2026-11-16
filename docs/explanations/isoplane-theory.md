@@ -127,10 +127,11 @@ s_d = \frac{t_{\mathrm{obj}}}{t_{\mathrm{dark}}}, \qquad
 I_{bd}(x,y) = I_b(x,y) - s_d D(x,y)
 $$
 
-Initial variance model:
+Initial variance model (2dfdr `FILL_VARIANCE`), in ADU² with $I_{bd}$ in ADU, so the read
+noise is converted to ADU before squaring:
 
 $$
-V_0(x,y) = \sigma_r^2 + \frac{\max(I_{bd}(x,y), 0)}{g}
+V_0(x,y) = \left(\frac{\sigma_r}{g}\right)^2 + \frac{\max(I_{bd}(x,y), 0)}{g}
 $$
 
 Flat-field correction (`F` = flat image):

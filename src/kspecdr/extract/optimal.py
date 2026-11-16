@@ -105,8 +105,9 @@ def optimal_extract(
         ``STND``: weights 1 / variance; ``NONE``: uniform weights (variances still
         propagated with the input variance).
     gain : float, optional
-        Gain (e-/ADU) of the variance model ``var = rn^2 + max(data, 0) / gain``. Needed for
-        the model-based variance of iterations after the first.
+        Gain (e-/ADU) of the variance model ``var = (rn / gain)^2 + max(data, 0) / gain``
+        (rn in e-, data in ADU; ``make_im``). Needed for the model-based variance of
+        iterations after the first.
     niter : int
         Number of fits. The first uses the input variance (2dfdr); later ones replace its
         Poisson part by that of the fitted model and reject outliers when ``clip > 0``.

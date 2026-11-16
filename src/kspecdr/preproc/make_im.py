@@ -721,7 +721,8 @@ class MakeIM:
         Returns
         -------
         tuple
-            (noise, gain)
+            (noise, gain): readout noise in electrons (``RO_NOISE``) and gain in
+            electrons per ADU (``RO_GAIN``), as in 2dfdr ``GET_NOISE_GAIN``.
         """
         # (noise_array, gain_array) for each amplifier
         # Try to get amplifier-specific noise and gain
@@ -748,47 +749,51 @@ class MakeIM:
         """
         Calculate variance for each pixel.
 
+        Port of 2dfdr ``FILL_VARIANCE`` (``drexec/variance_overscan.F95``):
+        ``var = (noise / gain)**2 + max(data, 0) / gain``, in ADU^2. The read noise is
+        converted from electrons to ADU before it is squared.
+
         Parameters
         ----------
         image_data : np.ndarray
-            Image data array
+            Bias- and dark-subtracted image, in ADU.
         noise : float
-            Readout noise
+            Readout noise in electrons (``RO_NOISE``).
         gain : float
-            Gain
+            Gain in electrons per ADU (``RO_GAIN``).
 
         Returns
         -------
         np.ndarray
-            Variance array
+            Variance array, in ADU^2.
         """
         nx, ny = image_data.shape
         # variance = np.zeros_like(image_data)
-        variance = noise**2 + np.maximum(image_data, 0) / gain
+        variance = (noise / gain) ** 2 + np.maximum(image_data, 0) / gain
         # logger.info(f"noise: {noise}, gain: {gain}, zero variance? {np.any(variance == 0)}")
 
         # # Determine amplifier layout
         # if len(noise) == 1 or np.all(noise == noise[0]):
         #     # Single amplifier
-        #     variance = noise[0]**2 + np.maximum(image_data, 0) / gain[0]
+        #     variance = (noise[0] / gain[0])**2 + np.maximum(image_data, 0) / gain[0]
         # elif len(noise) == 2:
         #     # Two amplifiers (left/right)
         #     mid_x = nx // 2
         #     # Left half
-        #     variance[:mid_x, :] = noise[0]**2 + np.maximum(image_data[:mid_x, :], 0) / gain[0]
+        #     variance[:mid_x, :] = (noise[0] / gain[0])**2 + np.maximum(image_data[:mid_x, :], 0) / gain[0]
         #     # Right half
-        #     variance[mid_x:, :] = noise[1]**2 + np.maximum(image_data[mid_x:, :], 0) / gain[1]
+        #     variance[mid_x:, :] = (noise[1] / gain[1])**2 + np.maximum(image_data[mid_x:, :], 0) / gain[1]
         # elif len(noise) == 4:
         #     # Four amplifiers (quadrants)
         #     mid_x, mid_y = nx // 2, ny // 2
         #     # Bottom-left
-        #     variance[:mid_x, :mid_y] = noise[0]**2 + np.maximum(image_data[:mid_x, :mid_y], 0) / gain[0]
+        #     variance[:mid_x, :mid_y] = (noise[0] / gain[0])**2 + np.maximum(image_data[:mid_x, :mid_y], 0) / gain[0]
         #     # Bottom-right
-        #     variance[mid_x:, :mid_y] = noise[1]**2 + np.maximum(image_data[mid_x:, :mid_y], 0) / gain[1]
+        #     variance[mid_x:, :mid_y] = (noise[1] / gain[1])**2 + np.maximum(image_data[mid_x:, :mid_y], 0) / gain[1]
         #     # Top-right
-        #     variance[mid_x:, mid_y:] = noise[2]**2 + np.maximum(image_data[mid_x:, mid_y:], 0) / gain[2]
+        #     variance[mid_x:, mid_y:] = (noise[2] / gain[2])**2 + np.maximum(image_data[mid_x:, mid_y:], 0) / gain[2]
         #     # Top-left
-        #     variance[:mid_x, mid_y:] = noise[3]**2 + np.maximum(image_data[:mid_x, mid_y:], 0) / gain[3]
+        #     variance[:mid_x, mid_y:] = (noise[3] / gain[3])**2 + np.maximum(image_data[:mid_x, mid_y:], 0) / gain[3]
 
         return variance
 
