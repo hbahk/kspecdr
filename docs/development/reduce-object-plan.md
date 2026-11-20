@@ -229,7 +229,8 @@ suitable for commissioning analysis.
        first-pass estimate; (b) build a median sky spectrum from sky
        fibers (`TYPE='S'`) normalized by that estimate; (c) subtract
        continuum via a ±100-pixel median filter; (d) for each P/S fiber,
-       do a robust linear fit (slope B) of the continuum-subtracted fiber
+       do a least-absolute-deviation line fit (2dfdr `RSTFIT`; slope B) of
+       the continuum-subtracted fiber
        spectrum against the median sky spectrum; (e) `thput = B` if
        `0.01 < B < 100`, else `NaN`; (f) normalize the whole vector by
        its median.
@@ -238,8 +239,14 @@ suitable for commissioning analysis.
        integrate continuum-subtracted flux in ±`2×FWHM`-pixel windows,
        normalize per line and across lines.  These are more robust when
        many sky lines are present but require a `skylines.dat` data file.
-     - **Recommendation for KSPEC commissioning**: start with
-       `'SKYLINE(KGB)'` (self-contained, no external file); fall back to
+     - **`'SKYLINE(TEMPLATE)'`** (not in 2dfdr): least-squares fit of the
+       high-passed sky-fiber template to each fiber on the strongest
+       sky-line pixels only, with sigma clipping; also writes `THPUT_ERR`.
+       Keys `TPSKY_WMIN`/`TPSKY_WMAX`/`TPSKY_TOP`/`TPSKY_FILTER`/`TPSKY_CLIP`.
+     - **Recommendation for KSPEC commissioning**: `'SKYLINE(TEMPLATE)'`
+       (self-contained, per frame). `'SKYLINE(KGB)'` fits every pixel and
+       is biased high on fibers with bright stars (their A band and
+       absorption lines correlate with a moonlit sky continuum); use
        `'OFFSKY'` if a dedicated sky frame is available.
   4. `thput_vec` is a 1-D float array of length NFIB.  Sanity bounds:
      values outside `(0.01, 100.0)` are set to `NaN`.

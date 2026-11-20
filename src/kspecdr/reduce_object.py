@@ -50,6 +50,18 @@ def reduce_object(args: Dict[str, Any]) -> None:
         - ``TST_SKYCAL``: Test skyline calibration (bool)
         - ``INC_RWSS``: Include Reduced Without Sky Subtraction copy (bool)
         - ``SKYSPRSMP``: Super sky subtraction (bool)
+        - ``THRUPUT``: Throughput calibration (bool, default True)
+        - ``TPMETH``: Throughput method (``'OFF'`` | ``'OFFSKY'`` |
+          ``'SKYLINE(TEMPLATE)'`` | ``'SKYLINE(KGB)'`` | ``'MEDIAN'``,
+          default ``'OFFSKY'``); see ``_throughput_calibrate``
+        - ``THPUT_FILENAME``: File with a ``THPUT`` HDU (``TPMETH='OFFSKY'``)
+        - ``TPSKY_WMIN``, ``TPSKY_WMAX``: Wavelength range [Å] of the sky-line
+          pixels for ``'SKYLINE(TEMPLATE)'`` (default 5450, 8850)
+        - ``TPSKY_TOP``: Per cent of the strongest template pixels fitted
+          (default 15)
+        - ``TPSKY_FILTER``: Running-median width [px] of the high-pass
+          (default 41)
+        - ``TPSKY_CLIP``: Clipping threshold [sigma] of the fit (default 4)
         - ``SKYSUB``: Enable sky subtraction (bool, default True)
         - ``SKYCOMBINE``: Sky fiber combination method
           (``'MEAN'`` | ``'MEDIAN'`` | ``'SIGCLIP'``, default ``'MEAN'``)
@@ -565,12 +577,18 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
     Methods (``TPMETH`` arg, default ``'OFFSKY'``):
     - ``'OFF'``: fix all fiber throughputs to 1.0 (no correction; THPUT HDU still written)
     - ``'OFFSKY'``: read pre-computed throughputs from ``THPUT_FILENAME``
+    - ``'SKYLINE(TEMPLATE)'``: fit of the sky-fiber template to each fiber
+      on the strongest sky-line pixels only (``_get_thput_template``; not a
+      2dfdr method). Also writes ``THPUT_ERR``. Use it when fibers carry
+      bright stars: KGB fits every pixel and is biased high there
     - ``'SKYLINE(KGB)'``: Karl Glazebrook's sky-line robust-fit algorithm
     - ``'MEDIAN'``: simple per-fiber mean, normalized by median
       (equivalent to 2dfdr ``UMFSPEC_FTPC``)
 
     Bad throughputs (NaN / outside 0.01–100) are stored as 0.0 in the
     THPUT extension and their spectra are set to zero (2dfdr convention).
+    Fibers other than P / S get no throughput from the sky-line methods, so
+    their spectra are zeroed too (as in 2dfdr).
     """
     from astropy.io import fits
     from .utils.fiber import get_override_from_args
@@ -593,6 +611,7 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
         )
 
         thput_vec = np.full(nfib, np.nan, dtype=np.float64)
+        thput_err = None
 
         # --- optional external override file ---
         use_external = args.get('USETHPTFILE', False)
@@ -601,12 +620,11 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
             import os
             if os.path.exists('THROUGHPUT.fits'):
                 with fits.open('THROUGHPUT.fits') as hdul:
-                    for hdu in hdul:
-                        if 'THPUT' in hdu.name.upper() and hdu.data is not None:
-                            n = min(len(hdu.data), nfib)
-                            thput_vec[:n] = hdu.data[:n]
-                            loaded_external = True
-                            break
+                    hdu = _find_thput_hdu(hdul)
+                    if hdu is not None:
+                        n = min(len(hdu.data), nfib)
+                        thput_vec[:n] = hdu.data[:n]
+                        loaded_external = True
                 if loaded_external:
                     logger.info("Throughput: loaded from THROUGHPUT.fits")
                     tpmeth = '_EXTERNAL'
@@ -623,11 +641,7 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
                     red_f.add_history('No throughput calibration performed')
                     return
                 with fits.open(thput_fname) as hdul:
-                    thput_hdu = None
-                    for hdu in hdul:
-                        if 'THPUT' in hdu.name.upper() and hdu.data is not None:
-                            thput_hdu = hdu
-                            break
+                    thput_hdu = _find_thput_hdu(hdul)
                     if thput_hdu is None:
                         logger.warning(
                             "No THPUT extension found in %s — "
@@ -638,6 +652,30 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
                     n = min(len(thput_hdu.data), nfib)
                     thput_vec[:n] = thput_hdu.data[:n]
                 logger.info("Throughput: loaded from %s (OFFSKY)", thput_fname)
+
+            elif tpmeth == 'SKYLINE(TEMPLATE)':
+                wave = red_f.read_wave_data()
+                if wave is None:
+                    raise ValueError(
+                        f"TPMETH=SKYLINE(TEMPLATE) needs a WAVELA HDU in {red_filename}"
+                    )
+                fit = _get_thput_template(
+                    spec,
+                    np.asarray(wave, dtype=float),
+                    fiber_types_arr,
+                    wrange=(
+                        float(args.get('TPSKY_WMIN', 5450.0)),
+                        float(args.get('TPSKY_WMAX', 8850.0)),
+                    ),
+                    top=float(args.get('TPSKY_TOP', 15.0)),
+                    width=int(args.get('TPSKY_FILTER', 41)),
+                    clip=float(args.get('TPSKY_CLIP', 4.0)),
+                )
+                if fit is None:
+                    red_f.add_history('No throughput calibration performed')
+                    return
+                thput_vec, thput_err, npx = fit
+                logger.info("Throughput: sky-line template fit on %d pixels", npx)
 
             elif tpmeth == 'SKYLINE(KGB)':
                 thput_vec = _get_thput_kgb(spec, fiber_types_arr)
@@ -680,6 +718,9 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
         # Write THPUT extension (bad → 0.0 per 2dfdr convention)
         thput_out = np.where(np.isfinite(thput_vec), thput_vec, 0.0).astype(np.float32)
         _write_image_hdu(red_f, 'THPUT', thput_out)
+        if thput_err is not None:
+            err_out = np.where(np.isfinite(thput_vec), thput_err, 0.0)
+            _write_image_hdu(red_f, 'THPUT_ERR', err_out.astype(np.float32))
 
         hist_map = {
             '_EXTERNAL':    'Throughput calibration using THROUGHPUT.fits',
@@ -689,6 +730,8 @@ def _throughput_calibrate(red_filename: str, args: Dict[str, Any]) -> None:
             'MEDIAN':       'Throughput calibration using per-fiber median (UMFSPEC)',
             'UMFSPEC':      'Throughput calibration using per-fiber median (UMFSPEC)',
             'SKYLINE(KGB)': 'Throughput calibration using sky lines (KGB method)',
+            'SKYLINE(TEMPLATE)': 'Throughput calibration using sky lines '
+                                 '(template fit)',
         }
         red_f.add_history(hist_map.get(tpmeth, f'Throughput calibration ({tpmeth})'))
 
@@ -919,6 +962,20 @@ def _write_image_hdu(f: ImageFile, name: str, data: 'np.ndarray') -> None:
     f.hdul.append(fits.ImageHDU(data=data, name=name_upper))
 
 
+def _find_thput_hdu(hdul):
+    """The throughput HDU of a FITS file: ``THPUT`` if present, else the first
+    HDU whose name contains ``THPUT`` (not ``THPUT_ERR``), with data."""
+    cands = [
+        h
+        for h in hdul
+        if "THPUT" in h.name.upper()
+        and not h.name.upper().endswith("ERR")
+        and h.data is not None
+    ]
+    exact = [h for h in cands if h.name.upper() == "THPUT"]
+    return (exact or cands or [None])[0]
+
+
 def _umfspec_ftpc(spec: 'np.ndarray') -> 'np.ndarray':
     """Per-fiber mean normalized by the global median (UMFSPEC_FTPC).
 
@@ -980,6 +1037,159 @@ def _boxcar1d(spec: 'np.ndarray', width: int = 5) -> 'np.ndarray':
     return result
 
 
+def _l1_line(x: "np.ndarray", y: "np.ndarray") -> float:
+    """Slope of the least-absolute-deviation line ``y = a + b x``.
+
+    2dfdr ``RSTFIT`` (``aaoMathUtils/l1_utils.f90``, TOMS 478 L1 algorithm),
+    solved here as a linear programme (HiGHS). Returns NaN if it fails.
+    """
+    from scipy.optimize import linprog
+    from scipy.sparse import eye, hstack, csr_matrix
+
+    n = len(x)
+    # variables: a, b, u+ (n), u- (n) >= 0;  a + b x_i + u+_i - u-_i = y_i
+    a_eq = hstack(
+        [csr_matrix(np.column_stack([np.ones(n), x])), eye(n), -eye(n)],
+        format="csr",
+    )
+    c = np.concatenate([[0.0, 0.0], np.ones(2 * n)])
+    bounds = [(None, None), (None, None)] + [(0, None)] * (2 * n)
+    res = linprog(c, A_eq=a_eq, b_eq=y, bounds=bounds, method="highs")
+    return float(res.x[1]) if res.status == 0 else float("nan")
+
+
+def _get_thput_template(
+    spec: "np.ndarray",
+    wave: "np.ndarray",
+    fiber_types: "np.ndarray",
+    wrange=(5450.0, 8850.0),
+    top: float = 15.0,
+    width: int = 41,
+    clip: float = 4.0,
+):
+    """Relative fiber throughput from a sky-line template fit (``SKYLINE(TEMPLATE)``).
+
+    Every fiber sees the same sky, so its sky-line pattern is the sky
+    template times its throughput. Starlight and the sky continuum are
+    smooth on the scale of the lines and go with a running-median high-pass.
+    Unlike ``SKYLINE(KGB)``, only the strongest emission-line pixels of the
+    template are fitted: absorption features of bright stars (telluric A
+    band, Ca II triplet) correlate with a moonlit or twilight sky continuum
+    and bias a fit over all pixels high, by tens of per cent for bright stars.
+    Not a 2dfdr method.
+
+    Limitation: the fit has no intercept. On a fiber whose star has a dense
+    absorption-line spectrum, the running median sits above the mean of the
+    star's high-passed spectrum, which is then negative on average at the
+    sky-line pixels, and the throughput comes out low (up to ~18 % in
+    synthetic tests with a dense, deep line forest; a few per cent for
+    typical stars). A fit with intercept removes that but about doubles
+    the frame-to-frame scatter.
+
+    Steps:
+
+    1. High-pass every spectrum: subtract a running median of ``width`` px
+       (NaN pixels interpolated for the filter and excluded from the fit).
+    2. Template = median of the sky fibers (TYPE ``S``), high-passed the same
+       way.
+    3. Select the template pixels inside ``wrange`` above its
+       ``100 - top`` percentile (the strongest sky-line pixels).
+    4. For each P / S fiber fit ``y = t * template`` by least squares on
+       those pixels, iterating 5 times with ``clip``-sigma clipping on the
+       residuals (MAD scale) against cosmic rays and stellar lines.
+    5. Normalize by the median ``t`` of the fitted fibers.
+
+    Parameters
+    ----------
+    spec : ndarray, shape (nfib, npix)
+        Spectra before sky subtraction.
+    wave : ndarray, shape (nfib, npix) or (npix,)
+        Wavelength [Å]; the median over fibers sets the pixel selection.
+    fiber_types : ndarray of str
+        Fiber ``TYPE`` codes.
+    wrange : tuple of float
+        Wavelength range [Å] of the fitted pixels.
+    top : float
+        Per cent of the template pixels in ``wrange`` that are fitted.
+    width : int
+        Running-median width [px] of the high-pass.
+    clip : float
+        Clipping threshold [sigma].
+
+    Returns
+    -------
+    tuple or None
+        ``(thput, thput_err, npix)``: throughput (median 1, NaN where not
+        fitted), its 1-sigma error from the fit residuals, and the number of
+        template pixels used. None if there are no sky fibers or fewer than
+        20 template pixels.
+    """
+    from scipy.ndimage import median_filter
+
+    nfib, npix = spec.shape
+    sky = np.asarray(fiber_types[:nfib]) == "S"
+    if not np.any(sky):
+        logger.warning("SKYLINE(TEMPLATE): no sky fibers — no throughput")
+        return None
+    wave = np.asarray(wave, dtype=float)
+    wv = np.nanmedian(wave, axis=0) if wave.ndim == 2 else wave
+
+    good = np.isfinite(spec)
+    filled = np.array(spec, dtype=float)
+    pix = np.arange(npix)
+    for i in range(nfib):
+        if 0 < good[i].sum() < npix:
+            filled[i, ~good[i]] = np.interp(
+                pix[~good[i]], pix[good[i]], filled[i, good[i]]
+            )
+        elif not good[i].any():
+            filled[i] = 0.0
+    hp = filled - median_filter(filled, size=(1, width), mode="nearest")
+    tmpl = np.median(filled[sky], axis=0)
+    tmpl = tmpl - median_filter(tmpl, size=width, mode="nearest")
+    sel = (wv > wrange[0]) & (wv < wrange[1]) & np.all(good[sky], axis=0)
+    if sel.sum() < 20:
+        logger.warning(
+            "SKYLINE(TEMPLATE): %d pixels in %.0f-%.0f Å — no throughput",
+            int(sel.sum()),
+            wrange[0],
+            wrange[1],
+        )
+        return None
+    strong = sel & (tmpl > np.percentile(tmpl[sel], 100.0 - top))
+    npx = int(strong.sum())
+    if npx < 20:
+        logger.warning(
+            "SKYLINE(TEMPLATE): only %d sky-line pixels — no throughput", npx
+        )
+        return None
+
+    t = np.full(nfib, np.nan)
+    err = np.full(nfib, np.nan)
+    for i in range(nfib):
+        if fiber_types[i] not in ("P", "S"):
+            continue
+        use = strong & good[i]
+        if use.sum() < 20:
+            logger.debug(
+                "SKYLINE(TEMPLATE): fiber %d has %d pixels — skipped", i, int(use.sum())
+            )
+            continue
+        x, y = tmpl[use], hp[i, use]
+        keep = np.ones(len(x), bool)
+        for _ in range(5):
+            a = np.sum(x[keep] * y[keep]) / np.sum(x[keep] ** 2)
+            d = y - a * x
+            keep = np.abs(d) < clip * 1.4826 * np.median(np.abs(d[keep]))
+        t[i] = a
+        err[i] = np.std(d[keep], ddof=1) / np.sqrt(np.sum(x[keep] ** 2))
+    ok = np.isfinite(t) & (t > 0)
+    if not ok.any():
+        return None
+    med = float(np.median(t[ok]))
+    return t / med, err / med, npx
+
+
 def _get_thput_kgb(
     spec: 'np.ndarray', fiber_types: 'np.ndarray'
 ) -> 'np.ndarray':
@@ -991,8 +1201,9 @@ def _get_thput_kgb(
        first-pass estimate.
     3. Subtract continuum (±100-px running median) from the sky and each
        fiber spectrum, then apply a 5-pixel boxcar smooth.
-    4. For each P/S fiber, fit a robust line (Siegel slope) of the
-       continuum-subtracted fiber spectrum vs. the median sky.  The slope B
+    4. For each P/S fiber, fit a straight line ``y = A + B x`` of the
+       continuum-subtracted fiber spectrum vs. the median sky by least
+       absolute deviations (2dfdr ``RSTFIT``, ``_l1_line``).  The slope B
        is the throughput.
     5. Validate 0.01 < B < 100; normalize the whole vector by its median.
     """
@@ -1036,15 +1247,7 @@ def _get_thput_kgb(
                 "KGB: fiber %d has only %d good pixels — skipping", i, int(np.sum(ok))
             )
             continue
-        x = sky_sm[ok]
-        y = fib_sm[ok]
-        try:
-            from scipy.stats import siegelslopes
-            B = float(siegelslopes(y, x).slope)
-        except Exception:
-            # Fallback: OLS slope (no intercept) through origin
-            denom = float(np.dot(x, x))
-            B = float(np.dot(x, y) / denom) if denom != 0 else 0.0
+        B = _l1_line(sky_sm[ok], fib_sm[ok])
         if 0.01 < B < 100.0:
             thput_out[i] = B
 
